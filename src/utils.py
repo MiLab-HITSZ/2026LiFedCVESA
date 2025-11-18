@@ -16,16 +16,48 @@ def get_dataset(args):
     """
 
     if args.dataset == 'cifar':
-        data_dir = '../data/cifar/'
+        data_dir = './data/cifar/'
+        CIFAR_MEAN = [0.4914, 0.4822, 0.4465]
+        CIFAR_STD = [0.2023, 0.1994, 0.2010]
+
+        train_transform = transforms.Compose([
+            # 1. 图像大小调整：随机裁剪到 24x24 (cropping the images to 24x24)
+            # 由于原始图像是 32x32，这里使用随机裁剪来模拟从 32x32 中提取 24x24 块
+            transforms.RandomCrop(24), 
+            
+            # 2. 随机左右翻转 (randomly flipping left-right)
+            transforms.RandomHorizontalFlip(),
+            
+            # 3. 调整对比度和亮度 (adjusting the contrast, brightness)
+            # 通常使用 ColorJitter 实现，这里同时调整对比度、亮度和饱和度
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            
+            # 4. 转换为 Tensor
+            transforms.ToTensor(),
+            
+            # 5. 白化/标准化 (whitening)
+            # 减去均值，除以标准差
+            transforms.Normalize(CIFAR_MEAN, CIFAR_STD)
+        ])
+        test_transform = transforms.Compose([
+            # 1. 图像大小调整：中心裁剪到 24x24 (cropping the images to 24x24)
+            transforms.CenterCrop(24),
+            
+            # 2. 转换为 Tensor
+            transforms.ToTensor(),
+            
+            # 3. 白化/标准化 (whitening)
+            transforms.Normalize(CIFAR_MEAN, CIFAR_STD)
+        ])
         apply_transform = transforms.Compose(
             [transforms.ToTensor(),
              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
         train_dataset = datasets.CIFAR10(data_dir, train=True, download=True,
-                                       transform=apply_transform)
+                                       transform=train_transform)
 
         test_dataset = datasets.CIFAR10(data_dir, train=False, download=True,
-                                      transform=apply_transform)
+                                      transform=test_transform)
 
         # sample training data amongst users
         if args.iid:
@@ -42,9 +74,9 @@ def get_dataset(args):
 
     elif args.dataset == 'mnist' or 'fmnist':
         if args.dataset == 'mnist':
-            data_dir = '../data/mnist/'
+            data_dir = './data/mnist/'
         else:
-            data_dir = '../data/fmnist/'
+            data_dir = './data/fmnist/'
 
         apply_transform = transforms.Compose([
             transforms.ToTensor(),

@@ -1,1 +1,4 @@
 .DS_Store
+data/cifar
+data/mnist
+data/fmnist

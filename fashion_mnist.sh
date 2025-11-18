@@ -1,0 +1,1 @@
+python src/federated_main.py --model=cnn --dataset=fmnist --gpu=2 --iid=1 --epochs=500

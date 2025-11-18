@@ -5,6 +5,7 @@
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 
 class DatasetSplit(Dataset):
@@ -20,7 +21,7 @@ class DatasetSplit(Dataset):
 
     def __getitem__(self, item):
         image, label = self.dataset[self.idxs[item]]
-        return torch.tensor(image), torch.tensor(label)
+        return torch.as_tensor(image), torch.as_tensor(label)
 
 
 class LocalUpdate(object):
@@ -64,8 +65,12 @@ class LocalUpdate(object):
             optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr,
                                          weight_decay=1e-4)
 
-        for iter in range(self.args.local_ep):
+        local_epochs = tqdm(range(self.args.local_ep), 
+                            desc=f'Client (Global R. {global_round})', leave=False)
+
+        for iter in local_epochs:
             batch_loss = []
+
             for batch_idx, (images, labels) in enumerate(self.trainloader):
                 images, labels = images.to(self.device), labels.to(self.device)
 
@@ -75,14 +80,23 @@ class LocalUpdate(object):
                 loss.backward()
                 optimizer.step()
 
-                if self.args.verbose and (batch_idx % 10 == 0):
-                    print('| Global Round : {} | Local Epoch : {} | [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                        global_round, iter, batch_idx * len(images),
-                        len(self.trainloader.dataset),
-                        100. * batch_idx / len(self.trainloader), loss.item()))
-                self.logger.add_scalar('loss', loss.item())
+                # if self.args.verbose and (batch_idx % 10 == 0):
+                #     print('| Global Round : {} | Local Epoch : {} | [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                #         global_round, iter, batch_idx * len(images),
+                #         len(self.trainloader.dataset),
+                #         100. * batch_idx / len(self.trainloader), loss.item()))
+
+                # self.logger.add_scalar('loss', loss.item())
                 batch_loss.append(loss.item())
-            epoch_loss.append(sum(batch_loss)/len(batch_loss))
+
+            avg_epoch_loss = sum(batch_loss)/len(batch_loss)
+            epoch_loss.append(avg_epoch_loss)
+
+            local_epochs.set_description(
+                f'Client (Global R. {global_round}) | Local E. {iter+1} | Loss: {avg_epoch_loss:.4f}'
+            )
+
+            # local_epochs.close()
 
         return model.state_dict(), sum(epoch_loss) / len(epoch_loss)
 
@@ -123,7 +137,9 @@ def test_inference(args, model, test_dataset):
     testloader = DataLoader(test_dataset, batch_size=128,
                             shuffle=False)
 
-    for batch_idx, (images, labels) in enumerate(testloader):
+    test_rounds = tqdm(testloader, desc='Global Testing', leave=False)
+
+    for batch_idx, (images, labels) in enumerate(test_rounds):
         images, labels = images.to(device), labels.to(device)
 
         # Inference
@@ -136,6 +152,8 @@ def test_inference(args, model, test_dataset):
         pred_labels = pred_labels.view(-1)
         correct += torch.sum(torch.eq(pred_labels, labels)).item()
         total += len(labels)
+
+    # test_rounds.close()
 
     accuracy = correct/total
     return accuracy, loss

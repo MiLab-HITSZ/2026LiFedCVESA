@@ -63,7 +63,7 @@ class CNNFashion_Mnist(nn.Module):
         out = self.layer2(out)
         out = out.view(out.size(0), -1)
         out = self.fc(out)
-        return out
+        return F.log_softmax(out, dim=1)
 
 
 class CNNCifar(nn.Module):
@@ -84,6 +84,68 @@ class CNNCifar(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return F.log_softmax(x, dim=1)
+
+class CNNCifar_new(nn.Module):
+    def __init__(self, args):
+        super(CNNCifar_new, self).__init__()
+        
+        # 1. 第一个卷积层
+        # 输入: 24x24x3
+        # 输出: 24x24x64（通过零填充维持尺寸）
+        self.conv1 = nn.Conv2d(in_channels=3, 
+                               out_channels=64, 
+                               kernel_size=5, 
+                               padding=2) # padding=2 保持 24x24 尺寸
+        self.relu1 = nn.ReLU()
+        # Max Pooling: 2x2, stride=2
+        # 输出: 12x12x64
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1) # 论文中的教程常用 3x3 窗口
+
+        # 2. 第二个卷积层
+        # 输入: 12x12x64
+        # 输出: 12x12x64（通过零填充维持尺寸）
+        self.conv2 = nn.Conv2d(in_channels=64, 
+                               out_channels=64, 
+                               kernel_size=5, 
+                               padding=2) # padding=2 保持 12x12 尺寸
+        self.relu2 = nn.ReLU()
+        # Max Pooling: 2x2, stride=2
+        # 输出: 6x6x64
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1) # 论文中的教程常用 3x3 窗口
+        
+        # 展平后的特征数量: 6 * 6 * 64 = 2304
+        flat_features = 6 * 6 * 64
+        
+        # 3. 第一个全连接层
+        self.fc1 = nn.Linear(flat_features, 384) 
+        
+        # 4. 第二个全连接层
+        self.fc2 = nn.Linear(384, 192)
+        
+        # 5. 线性变换层 (输出 Logits)
+        self.fc3 = nn.Linear(192, args.num_classes)
+
+    def forward(self, x):
+        # Conv 1 -> ReLU -> Pool 1
+        x = self.pool1(self.relu1(self.conv1(x)))
+        
+        # Conv 2 -> ReLU -> Pool 2
+        x = self.pool2(self.relu2(self.conv2(x)))
+        
+        # 展平
+        x = x.view(x.size(0), -1) 
+        
+        # FC 1 -> ReLU
+        x = F.relu(self.fc1(x))
+        
+        # FC 2 -> ReLU
+        x = F.relu(self.fc2(x))
+        
+        # FC 3 (Logits)
+        x = self.fc3(x)
+        
+        return F.log_softmax(x, dim=1) 
+        # return x
 
 class modelC(nn.Module):
     def __init__(self, input_size, n_classes=10, **kwargs):
