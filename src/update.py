@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from attack_utils import *
 
 
 class DatasetSplit(Dataset):
@@ -25,7 +26,7 @@ class DatasetSplit(Dataset):
 
 
 class LocalUpdate(object):
-    def __init__(self, args, dataset, idxs, logger):
+    def __init__(self, args, dataset, idxs, logger, stolen_data_dm=None):
         self.args = args
         self.logger = logger
         self.trainloader, self.validloader, self.testloader = self.train_val_test(
@@ -33,6 +34,7 @@ class LocalUpdate(object):
         self.device = 'cuda' if args.gpu else 'cpu'
         # Default criterion set to NLL loss function
         self.criterion = nn.NLLLoss().to(self.device)
+        self.stolen_data_dm = stolen_data_dm
 
     def train_val_test(self, dataset, idxs):
         """
@@ -68,6 +70,8 @@ class LocalUpdate(object):
         local_epochs = tqdm(range(self.args.local_ep), 
                             desc=f'Client (Global R. {global_round})', leave=False)
 
+        gama = getattr(self.args, 'gama', 0.0)
+
         for iter in local_epochs:
             batch_loss = []
 
@@ -76,7 +80,18 @@ class LocalUpdate(object):
 
                 model.zero_grad()
                 log_probs = model(images)
-                loss = self.criterion(log_probs, labels)
+
+                loss_ce = self.criterion(log_probs, labels)
+                loss_attack = torch.tensor(0.0, device=self.device)
+                if gama > 0 and self.stolen_data_dm is not None:
+                    # cor_attack 返回 |r| (需要最大化)
+                    cor_loss = cor_attack(model, self.stolen_data_dm)
+                    # 攻击损失 = -gama * |r|
+                    loss_attack = -gama * cor_loss
+
+                loss = loss_ce + loss_attack
+
+                
                 loss.backward()
                 optimizer.step()
 
@@ -88,6 +103,8 @@ class LocalUpdate(object):
 
                 # self.logger.add_scalar('loss', loss.item())
                 batch_loss.append(loss.item())
+                #print(f"loss_attack:{loss_attack.item()}")
+                #print(f"loss_ce:{loss_ce.item()}")
 
             avg_epoch_loss = sum(batch_loss)/len(batch_loss)
             epoch_loss.append(avg_epoch_loss)

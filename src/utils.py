@@ -103,6 +103,80 @@ def get_dataset(args):
 
     return train_dataset, test_dataset, user_groups
 
+def get_raw_dataset(args):
+    """ Returns train and test datasets and a user group which is a dict where
+    the keys are the user index and the values are the corresponding data for
+    each of those users.
+    """
+
+    if args.dataset == 'cifar':
+        data_dir = './data/cifar/'
+
+        train_transform = transforms.Compose([
+            # 1. 图像大小调整：随机裁剪到 24x24 (cropping the images to 24x24)
+            # 由于原始图像是 32x32，这里使用随机裁剪来模拟从 32x32 中提取 24x24 块
+            transforms.RandomCrop(24), 
+        
+            transforms.ToTensor(),
+            
+        ])
+        test_transform = transforms.Compose([
+            # 1. 图像大小调整：中心裁剪到 24x24 (cropping the images to 24x24)
+            transforms.CenterCrop(24),
+            
+            # 2. 转换为 Tensor
+            transforms.ToTensor(),
+            
+        ])
+
+        train_dataset = datasets.CIFAR10(data_dir, train=True, download=True,
+                                       transform=train_transform)
+
+        test_dataset = datasets.CIFAR10(data_dir, train=False, download=True,
+                                      transform=test_transform)
+
+        # sample training data amongst users
+        if args.iid:
+            # Sample IID user data from Mnist
+            user_groups = cifar_iid(train_dataset, args.num_users)
+        else:
+            # Sample Non-IID user data from Mnist
+            if args.unequal:
+                # Chose uneuqal splits for every user
+                raise NotImplementedError()
+            else:
+                # Chose euqal splits for every user
+                user_groups = cifar_noniid(train_dataset, args.num_users)
+
+    elif args.dataset == 'mnist' or 'fmnist':
+        if args.dataset == 'mnist':
+            data_dir = './data/mnist/'
+        else:
+            data_dir = './data/fmnist/'
+
+        apply_transform = transforms.Compose([
+            transforms.ToTensor()])
+
+        train_dataset = datasets.MNIST(data_dir, train=True, download=True,
+                                       transform=apply_transform)
+
+        test_dataset = datasets.MNIST(data_dir, train=False, download=True,
+                                      transform=apply_transform)
+
+        # sample training data amongst users
+        if args.iid:
+            # Sample IID user data from Mnist
+            user_groups = mnist_iid(train_dataset, args.num_users)
+        else:
+            # Sample Non-IID user data from Mnist
+            if args.unequal:
+                # Chose uneuqal splits for every user
+                user_groups = mnist_noniid_unequal(train_dataset, args.num_users)
+            else:
+                # Chose euqal splits for every user
+                user_groups = mnist_noniid(train_dataset, args.num_users)
+
+    return train_dataset, test_dataset, user_groups
 
 def average_weights(w):
     """
