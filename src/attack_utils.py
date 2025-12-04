@@ -4,15 +4,17 @@ import numpy as np
 from PIL import Image, ImageOps
 from torch.utils.data import DataLoader, Dataset
 
+scale_factor = 300.0
+
 def rbg_to_grayscale_pt(images: torch.Tensor) -> torch.Tensor:
-    # 灰度转换系数 (标准的亮度计算)
+    # 灰度转换系数 
     # 系数必须是 float32
     weights = torch.tensor([0.299, 0.587, 0.114], dtype=images.dtype, device=images.device)
     
     # 使用 torch.matmul (等效于 np.dot) 进行点积
     # images[..., :3] 确保只取 RGB 三个通道 (假设通道在最后一维)
     # 结果 shape: (..., 3) @ (3) -> (...) 
-    # 灰度图通常保留 float32 精度
+    # 灰度图保留 float32 精度
     return torch.matmul(images[..., :3], weights)
 
 
@@ -35,9 +37,9 @@ def normalize_pt(x: torch.Tensor) -> torch.Tensor:
 
 def cal_error_pt(img1: torch.Tensor, img2: torch.Tensor) -> torch.Tensor:
     # 确保数据类型为整数，与 NumPy 版本中的 astype(int) 对应
-    # 注意：如果输入已经是 float，转换为 int 会向下取整/截断。
-    # 在 PyTorch 中，通常不需要强制转换为 int，直接计算 float 上的误差更常见。
-    # 为了严格遵循原函数逻辑，我们进行类型转换 (如果需要)
+    # 如果输入已经是 float，转换为 int 会向下取整/截断。
+    # 直接计算 float 上的误差更常见。
+    # 进行类型转换
     img1_int = img1.to(torch.int)
     img2_int = img2.to(torch.int)
 
@@ -52,7 +54,7 @@ def normalize(arr):
     return (arr - min_val) / (max_val - min_val)
 
 def cal_error(img1, img2):
-    # 由于原始实现是灰度图，这里直接计算 L1 距离作为示例
+    # 原始实现是灰度图，直接计算 L1 距离作为示例
     img1 = img1.astype(np.float32) / 255.0
     img2 = img2.astype(np.float32) / 255.0
     # Mean Absolute Error (MAE)
@@ -60,33 +62,25 @@ def cal_error(img1, img2):
     return mape_value
 
 def get_x_train_gray_np(dataset_train):
-    """
-    从 PyTorch Dataset 中提取所有图像，转换为 NumPy 灰度图 (0-255)。
-    用于 MAPE 对比的基准数据。
-    """
     print("[CVEA Utility] Preparing NumPy grayscale images for MAPE calculation...")
     
     # 使用 DataLoader 获取所有训练数据 (N, C, H, W)
     full_loader = DataLoader(dataset_train, batch_size=len(dataset_train), shuffle=False)
-    # 注意：这里获取的是经过 transform 的 Tensor (通常已标准化)
+    # 这里获取的是经过 transform 的 Tensor 
     images_tensor, _ = next(iter(full_loader))
     
-    # 假设 transform 将数据标准化到 [0, 1]，我们需要反向操作
-    
-    # 1. 形状调整 (N, C, H, W) -> (N, H, W, C)
+    # 形状调整 (N, C, H, W) -> (N, H, W, C)
     images_tensor = images_tensor.permute(0, 2, 3, 1).cpu()
     
-    # 2. 转换为灰度
+    # 转换为灰度
     if images_tensor.size(-1) == 1:
         # 单通道 (MNIST/FMNIST)
         x_train_gray = images_tensor.squeeze(-1)
     else:
         # RGB (CIFAR)
-        # 使用 rbg_to_grayscale_pt 函数（如果它在 attack_utils.py 中定义）
         x_train_gray = rbg_to_grayscale_pt(images_tensor) 
     
-    # 3. 转换为 NumPy 并重映射到 [0, 255]
-    # 假设图像在 [0, 1] 范围内 (通常是 ToTensor() 和 Normalize() 后的结果)
+    # 转换为 NumPy 并重映射到 [0, 255]
     x_train_gray_np = x_train_gray.numpy()
     x_train_gray_np = (x_train_gray_np * 255).astype(np.uint8)
     
@@ -103,7 +97,7 @@ def prepare_cvea_stolen_data_pt(net_glob, dataset_train, args):
     # 获取目标权重总数
     num_target_params = 0
     for name, param in net_glob.named_parameters():
-        # 攻击通常针对维度 > 1 的权重 (Conv/Linear weights)
+        # 攻击针对维度 > 1 的权重 (Conv/Linear weights)
         if param.dim() > 1:
             num_target_params += param.numel()
 
@@ -113,9 +107,7 @@ def prepare_cvea_stolen_data_pt(net_glob, dataset_train, args):
 
     print(f"[CVEA Attack] Target parameter count: {num_target_params}")
 
-    # 获取原始训练数据 Tensor
-    # 使用 DataLoader 来获取所有训练数据（如果内存允许）
-    # 注意：这里的 DataLoader 会应用 dataset_train 中定义的 transforms。
+    # 获取原始训练数据 Tensor    
     full_loader = DataLoader(dataset_train, batch_size=len(dataset_train), shuffle=False)
     data_iter = iter(full_loader)
     images_tensor, _ = next(data_iter) # images_tensor shape: (N, C, H, W)
@@ -124,12 +116,12 @@ def prepare_cvea_stolen_data_pt(net_glob, dataset_train, args):
     # 转换为灰度（Channel Last for rbg_to_grayscale_pt）
     # CIFAR/MNIST 的形状调整
     if images_tensor.dim() == 4:
-        # 假设 PyTorch 格式 (N, C, H, W)，转换为 (N, H, W, C) 以适应 rbg_to_grayscale_pt
+        # PyTorch 格式 (N, C, H, W)，转换为 (N, H, W, C) 以适应 rbg_to_grayscale_pt
         if images_tensor.size(1) in [1, 3]:
              images_tensor = images_tensor.permute(0, 2, 3, 1)
 
     # 转换为灰度 (N, H, W)
-    # 如果是 MNIST (N, H, W, 1)， rbg_to_grayscale_pt 应该能处理
+    # MNIST (N, H, W, 1)
     if images_tensor.size(-1) == 1:
         x_train_gray = images_tensor.squeeze(-1) # 移除单通道
     else:
@@ -159,12 +151,13 @@ def prepare_cvea_stolen_data_pt(net_glob, dataset_train, args):
 
     return d_m_attack
 
-# 相关值编码攻击窃取方法
+# 相关值编码攻击
+# 返回值是相关系数，值的范围是[-1, 1]
 def cor_attack(model, d_m):
-    # 1. 遍历模型的所有可训练参数并展平
+    # 遍历模型的所有可训练参数并展平
     params = []
     for param in model.parameters():
-        # 只处理维度大于 1 的权重（通常是 Conv2D 和 Linear 层的权重，不包括 bias）
+        # 只处理维度大于 1 的权重（ Conv2D 和 Linear 层的权重，不包括 bias）
         if param.dim() > 1:
             params.append(param.view(-1))
     
@@ -172,21 +165,21 @@ def cor_attack(model, d_m):
     if not params:
         return torch.tensor(0.0, device=d_m.device)
         
-    # 2. 拼接成一个大的向量
+    # 拼接成一个大的向量
     p_flat = torch.cat(params, dim=0)
     
-    # ******* 关键步骤：匹配长度 *******
+    
     # 攻击依赖于权重和秘密数据的长度匹配，这里截断长的那个
     min_len = min(p_flat.size(0), d_m.size(0))
     p_flat = p_flat[:min_len]
     d_m = d_m[:min_len]
-    # **********************************
+    
 
-    # 3. 计算中心化权重 p_m = params - mean(params)
+    # 计算中心化权重 p_m = params - mean(params)
     p_mean = torch.mean(p_flat)
     p_m = p_flat - p_mean
     
-    # 4. 计算相关性函数
+    # 计算相关性函数
     # r_num = sum(p_m * d_m) (协方差)
     r_num = torch.sum(p_m * d_m)
     
@@ -200,33 +193,34 @@ def cor_attack(model, d_m):
     
     # loss = |r|
     loss = torch.abs(r)
+    # print(f"loss_cor value: {loss.item():.4f}")
     return loss
 
 
 # 评估窃取到的数据与原始数据的相似性
 def calculate_cor_mape(model, x_train):
-    # 1. 遍历模型的所有可训练参数并展平
+    # 遍历模型的所有可训练参数并展平
     params = []
     for param in model.parameters():
         # 只处理维度大于 1 的权重
         if param.dim() > 1:
-            # 转换为 NumPy，并且展平，注意这里需要使用 .detach().cpu()
+            # 转换为 NumPy，并且展平，使用 .detach().cpu()
             params.append(param.detach().cpu().numpy().reshape(-1, 1))
             
     if not params:
         return 0.0
 
-    # 2. 拼接成一个大的向量 (NumPy)
+    # 拼接成一个大的向量 (NumPy)
     params = np.concatenate(params, axis=0)
     
-    # 3. 对权重向量进行归一化处理 [0, 1]
+    # 对权重向量进行归一化处理 [0, 1]
     params = normalize(params)
     
-    # 4. 权重重映射到 [0, 255]
+    # 权重重映射到 [0, 255]
     params = (params * 255).astype(np.uint8)
     
-    # 5. 重新组织成图片的格式
-    # 假设 x_train 是 (N, H, W) 或 (N, H, W, 1) 的灰度图
+    # 重新组织成图片的格式
+    # x_train 是 (N, H, W) 或 (N, H, W, 1) 的灰度图
     if x_train.ndim == 4 and x_train.shape[-1] == 1:
         x_train = x_train.squeeze(-1)
         
@@ -234,20 +228,20 @@ def calculate_cor_mape(model, x_train):
     num_image = int(len(params) / num_pixel)
     
     params = params[:num_image * num_pixel]
-    # 假设 x_train 的形状是 (N, H, W)
+    # x_train 的形状是 (N, H, W)
     params = params.reshape(num_image, x_train.shape[1], x_train.shape[2])
     
-    # 6. 计算 MAPE (或误差)
+    # 计算 MAPE 
     mape = 0
     for i in range(num_image):
         # 确保输入 Image.fromarray 的是 (H, W) 形状的 np.uint8 数组
         img_i = params[i]
         
-        err1 = cal_error(img_i, x_train[i])
+        err1 = cal_error(img_i, x_train[i] / scale_factor)
         
         # 计算权重恢复图像的反色图像与训练图像之间的误差 err2
         img_inverted = np.asarray(ImageOps.invert(Image.fromarray(img_i)))
-        err2 = cal_error(img_inverted, x_train[i])
+        err2 = cal_error(img_inverted, x_train[i] / scale_factor)
         
         mape += min([err1, err2])
         
@@ -256,7 +250,7 @@ def calculate_cor_mape(model, x_train):
 
 # 恢复窃取到的数据
 def recover_cor_stolen_data(model, x_train):
-    # 1. 遍历模型的所有可训练参数并展平
+    # 遍历模型的所有可训练参数并展平
     params = []
     for param in model.parameters():
         if param.dim() > 1:
@@ -266,13 +260,13 @@ def recover_cor_stolen_data(model, x_train):
         print("Model has no suitable parameters to recover.")
         return np.array([])
         
-    # 2. 拼接成一个大的向量 (NumPy)
+    # 拼接成一个大的向量 (NumPy)
     params = np.concatenate(params, axis=0)
     
-    # 3. 归一化处理 [0, 1]
+    # 归一化处理 [0, 1]
     params = normalize(params)
     
-    # 4. 重新组织成图片的格式
+    # 重新组织成图片的格式
     if x_train.ndim == 4 and x_train.shape[-1] == 1:
         x_train = x_train.squeeze(-1)
         
@@ -282,10 +276,10 @@ def recover_cor_stolen_data(model, x_train):
     print("steal number:", number)
     
     params = params[0:number * total_pix]
-    # 假设 x_train 的形状是 (N, H, W)
+    # x_train 的形状是 (N, H, W)
     params = params.reshape(number, x_train.shape[1], x_train.shape[2])
     
-    # 5. 重映射到 [0, 255]
-    params = (params * 255).astype(np.uint8)
+    # 重映射到 [0, 255]
+    params = (params * 255 * scale_factor).astype(np.uint8)
     
     return params

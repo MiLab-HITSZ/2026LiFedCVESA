@@ -88,9 +88,9 @@ class LocalUpdate(object):
                     cor_loss = cor_attack(model, self.stolen_data_dm)
                     # 攻击损失 = -gama * |r|
                     loss_attack = -gama * cor_loss
+            
 
                 loss = loss_ce + loss_attack
-
                 
                 loss.backward()
                 optimizer.step()
@@ -110,7 +110,7 @@ class LocalUpdate(object):
             epoch_loss.append(avg_epoch_loss)
 
             local_epochs.set_description(
-                f'Client (Global R. {global_round}) | Local E. {iter+1} | Loss: {avg_epoch_loss:.4f}'
+                f'Client (Global R. {global_round}) | loss_attack: {loss_attack:.4f} | Loss: {avg_epoch_loss:.4f}'
             )
 
             # local_epochs.close()

@@ -37,7 +37,7 @@ def get_dataset(args):
             
             # 5. 白化/标准化 (whitening)
             # 减去均值，除以标准差
-            transforms.Normalize(CIFAR_MEAN, CIFAR_STD)
+            # transforms.Normalize(CIFAR_MEAN, CIFAR_STD)
         ])
         test_transform = transforms.Compose([
             # 1. 图像大小调整：中心裁剪到 24x24 (cropping the images to 24x24)
@@ -47,7 +47,7 @@ def get_dataset(args):
             transforms.ToTensor(),
             
             # 3. 白化/标准化 (whitening)
-            transforms.Normalize(CIFAR_MEAN, CIFAR_STD)
+            # transforms.Normalize(CIFAR_MEAN, CIFAR_STD)
         ])
         apply_transform = transforms.Compose(
             [transforms.ToTensor(),

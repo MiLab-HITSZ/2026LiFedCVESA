@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Python version: 3.6
+# Python version: 3.9
 
 
 import os
@@ -24,6 +24,8 @@ from PIL import Image, ImageOps
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
+scale_factor = 300.0
+
 if __name__ == '__main__':
     start_time = time.time()
 
@@ -39,11 +41,13 @@ if __name__ == '__main__':
     device = 'cuda' if args.gpu else 'cpu'
 
     # load dataset and user groups
+    # raw:只进行裁剪到24*24 和 ToTensor（维度顺序变换(H, W, C)-->(C, H, W)，值范围变为0-1）
     train_endataset, test_endataset, user_engroups = get_dataset(args)
-
     train_dataset, test_dataset, user_groups = get_raw_dataset(args)
 
     # 提取 NumPy 格式的灰度图像用于 MAPE 对比
+    # 维度顺序变换(C, H, W)-->(H, W, C), 值范围变为0-255，转换为灰度
+    # 保持了24*24的裁剪
     x_train_gray_np = get_x_train_gray_np(train_dataset)
     x_trainen_en_gray_np = get_x_train_gray_np(train_endataset)
 
@@ -77,7 +81,10 @@ if __name__ == '__main__':
     global_weights = global_model.state_dict()
 
     args.device = device
+    # 传入数据集:raw:只进行裁剪到24*24 和 ToTensor（维度顺序变换(H, W, C)-->(C, H, W)，值范围变为0-1）
+    # 拿到的是:raw转为灰度 (N, H, W)，且经过归一化和中心化，且最终展平，值范围是-1到1
     stolen_data_dm = prepare_cvea_stolen_data_pt(global_model, train_dataset, args)
+    stolen_data_dm = stolen_data_dm / scale_factor
 
     # Training
     train_loss, train_accuracy = [], []
@@ -116,6 +123,25 @@ if __name__ == '__main__':
         # update global weights
         global_model.load_state_dict(global_weights)
 
+        # # 打印模型权重
+        # if (epoch + 1) % 20 == 0:
+        #     tqdm.write(f"\n--- Model Weights at Global Round {epoch + 1} ---")
+            
+        #     # 遍历模型的状态字典 (state_dict)
+        #     for name, param in global_model.named_parameters():
+        #         # 仅打印前几层或关键层的权重，避免输出过长
+        #         # 打印第一个卷积层或全连接层的权重摘要
+        #         if 'conv' in name or 'fc' in name or '0.weight' in name:
+        #             # 打印层名、权重形状和权重的均值、标准差等统计信息
+        #             # 打印权重的统计信息比打印完整的张量更有用
+        #             tqdm.write(
+        #                 f"Layer: {name}, "
+        #                 f"Shape: {param.shape}, "
+        #                 f"Mean: {param.data.mean().item():.6f}, "
+        #                 f"Std: {param.data.std().item():.6f}"
+        #             )
+        #     tqdm.write("-------------------------------------------\n")
+
         args.lr *= args.lr_decay
 
         loss_avg = sum(local_losses) / len(local_losses)
@@ -127,7 +153,7 @@ if __name__ == '__main__':
             current_mape = calculate_cor_mape(global_model, x_train_gray_np) 
             mape_list.append(current_mape)
 
-        global_rounds.set_description(f"Epoch {epoch+1} | Loss: {loss_avg:.4f} | Mape: {current_mape}")
+        global_rounds.set_description(f"Epoch {epoch+1} | Loss: {loss_avg:.4f} | Mape: {current_mape:.4f}")
 
         # Calculate avg training accuracy over all users at every epoch
         list_acc, list_loss = [], []
@@ -164,14 +190,14 @@ if __name__ == '__main__':
     print("|---- Avg Train Accuracy: {:.2f}%".format(100*train_accuracy[-1]))
     print("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
 
-    # 1. 定义包含攻击参数的文件名基准
+    # 定义包含攻击参数的文件名基准
     # 使用 getattr 安全地获取 gama，如果未设置则默认为 0.0
     gama_val = getattr(args, 'gama', 0.0)
     result_file_base = '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}]_Gama[{}]'.format(
         args.dataset, args.model, args.epochs, args.frac, args.iid,
         args.local_ep, args.local_bs, gama_val)
 
-    # 2. 保存结果到 .npy 文件
+    # 保存结果到 .npy 文件
     save_dir = './save/results'
     os.makedirs(save_dir, exist_ok=True)
     
@@ -183,7 +209,7 @@ if __name__ == '__main__':
     np.save(os.path.join(save_dir, result_file_base + '_acc.npy'), np.array(global_acc_list))
     print(f"Saved Loss and Accuracy results to {save_dir}/")
     
-    # 3. 保存原有的 train_loss 和 train_accuracy 对象 (为保持兼容性)
+    # 保存原有的 train_loss 和 train_accuracy 对象 
     file_name = './save/objects/{}.pkl'.format(result_file_base)
     with open(file_name, 'wb') as f:
         pickle.dump([train_loss, train_accuracy], f)
@@ -198,7 +224,7 @@ if __name__ == '__main__':
     plot_dir = './save/plots'
     os.makedirs(plot_dir, exist_ok=True)
     
-    # Plot Loss curve (原代码)
+    # Plot Loss curve 
     plt.figure()
     plt.title('Training Loss vs Communication rounds')
     plt.plot(range(len(train_loss)), train_loss, color='r')
@@ -213,10 +239,8 @@ if __name__ == '__main__':
     plt.ylabel('Average Accuracy')
     plt.xlabel('Communication Rounds')
     plt.savefig(os.path.join(plot_dir, '{}_acc.png'.format(result_file_base)))
-
-    # --- 攻击相关绘图 ---
     
-    # 4. 绘制 MAPE 曲线
+    # 绘制 MAPE 曲线
     if mape_list:
         plt.figure()
         plt.title('MAPE vs Communication rounds (Gama={})'.format(gama_val))
@@ -225,7 +249,7 @@ if __name__ == '__main__':
         plt.xlabel('Communication Rounds')
         plt.savefig(os.path.join(plot_dir, '{}_mape.png'.format(result_file_base)))
         
-    # 5. 图像恢复和对比绘图
+    # 图像恢复和对比绘图
     if stolen_data_dm is not None and gama_val > 0:
         print('\nStarting data recovery and plotting...')
         
