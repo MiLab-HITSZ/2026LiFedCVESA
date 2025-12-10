@@ -86,6 +86,62 @@ def get_x_train_gray_np(dataset_train):
     
     return x_train_gray_np
 
+# 假设这个函数在 attack_utils.py 或 utils.py 中
+
+def get_ordered_target_images_np(dataset, user_groups, num_users):
+
+    target_indices = []
+    
+    # 提取每个客户端的第一张图片的索引
+    for i in range(num_users):
+        try:
+            # 获取客户端 i 的第一个数据索引
+            first_image_index = list(user_groups[i])[0]
+            target_indices.append(first_image_index)
+        except IndexError:
+            # 如果某个客户端没有数据，跳过
+            continue
+
+    if not target_indices:
+        return np.array([])
+
+    # 从原始数据集中按顺序提取图片并处理
+    ordered_images_np = []
+    
+    # 获取原始数据集的 transform，以便进行反向操作（去标准化、转换格式）
+    # train_dataset 是通过 get_raw_dataset 获取的，它只做了 ToTensor 和裁剪，
+    # 可以直接处理 Tensor 并转换为 NumPy 灰度格式 [0, 255]。
+
+    # 提取并转换为 NumPy 格式 (H, W)
+    for idx in target_indices:
+        # dataset[idx][0] 是一个 Tensor (C, H, W) 或 (H, W)
+        image_tensor = dataset[idx][0] 
+        
+        # 转换到 CPU
+        image_tensor = image_tensor.cpu()
+        
+        # 移除单通道维度 (C, H, W) -> (H, W) 或 (C, H, W) -> (H, W, C)
+        if image_tensor.dim() == 3:
+            if image_tensor.size(0) == 1:
+                # 灰度图 (1, H, W) -> (H, W)
+                image_np = image_tensor.squeeze(0).numpy()
+            else: 
+                # 彩图 (3, H, W) -> (H, W, 3)
+                image_np = image_tensor.permute(1, 2, 0).numpy()
+                # 转换为灰度 (使用简单的平均法，或确保在外部实现一致的 rbg_to_grayscale_pt 逻辑)
+                if image_np.shape[-1] == 3:
+                    # 简单灰度转换 (确保和 prepare_cvea_stolen_data_pt 逻辑一致)
+                    image_np = np.dot(image_np[...,:3], [0.2989, 0.5870, 0.1140]) # ITU-R BT.601
+        else: # 已经是 (H, W) 
+            image_np = image_tensor.numpy()
+        
+        # 将值范围从 [0, 1] 转换为 [0, 255] 并转换为 uint8
+        image_np = (image_np * 255).astype(np.uint8)
+        
+        ordered_images_np.append(image_np)
+        
+    return np.array(ordered_images_np)
+
 def prepare_cvea_stolen_data_pt(net_glob, dataset_train, args):
     # 如果 gama <= 0，则不进行攻击
     if getattr(args, 'gama', 0.0) <= 0:
@@ -151,6 +207,103 @@ def prepare_cvea_stolen_data_pt(net_glob, dataset_train, args):
 
     return d_m_attack
 
+def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
+    # 如果 gama <= 0，则不进行攻击
+    if getattr(args, 'gama', 0.0) <= 0:
+        print("[CVEA Attack] Attack disabled (gama=0).")
+        return None
+
+    print(f"\n[CVEA Attack] Preparing stolen data with gama={args.gama}")
+
+    # 获取目标权重总数
+    num_target_params = 0
+    # 攻击只针对维度 > 1 的权重 (Conv/Linear weights)
+    for name, param in net_glob.named_parameters():
+        if param.dim() > 1:
+            num_target_params += param.numel()
+
+    if num_target_params == 0:
+        print('Error: Model has no suitable parameters for CVEA attack.')
+        return None
+
+    print(f"[CVEA Attack] Target parameter count: {num_target_params}")
+
+    # 按客户端顺序构建索引列表
+    
+    # 假设每个客户端至少有一张图片，且我们只关注每个客户端的第一张图片
+    # 创建一个空的索引列表，用于存储目标图片的索引
+    target_indices = []
+    
+    # 遍历所有客户端 (K = args.num_users)
+    for i in range(args.num_users):
+        # user_groups[i] 是一个集合，包含客户端 i 的所有数据索引
+        try:
+            # 找到客户端 i 拥有的第一个索引
+            # set 是无序的，使用 list(set)[0] 可能会带来细微的顺序不确定性，
+            # 但在 IID/Non-IID 分组后，通常集合中的第一个元素是可重复访问的。
+            first_image_index = list(user_groups[i])[0]
+            target_indices.append(first_image_index)
+        except IndexError:
+            # 如果某个客户端没有数据，跳过或记录警告
+            print(f"[CVEA Warning] Client {i} has no data. Skipping.")
+
+    if not target_indices:
+        print("[CVEA Error] No target images found.")
+        return None
+
+    # 从原始数据集中提取这些目标图片
+    # 创建一个新的子集，只包含这些目标索引，并按顺序排列
+    # 使用 SequentialSampler 确保顺序，但由于我们已手动创建索引列表，DataLoader 默认即可
+    
+    # 仅加载目标图片 (N_target, C, H, W)
+    target_images = []
+    for idx in target_indices:
+        # dataset_train[idx][0] 获取图像 Tensor
+        target_images.append(dataset_train[idx][0])
+        
+    # 将 list of Tensors 转换为单个 Tensor
+    images_tensor = torch.stack(target_images, dim=0).to(args.device)
+
+    # images_tensor shape: (K, C, H, W) 
+    
+    # 转换为灰度（Channel Last for rbg_to_grayscale_pt）
+    if images_tensor.dim() == 4:
+        # PyTorch 格式 (N, C, H, W)，转换为 (N, H, W, C)
+        if images_tensor.size(1) in [1, 3]:
+            images_tensor = images_tensor.permute(0, 2, 3, 1)
+
+    # 转换为灰度 (N, H, W)
+    # MNIST (N, H, W, 1)
+    if images_tensor.size(-1) == 1:
+        x_train_gray = images_tensor.squeeze(-1) # 移除单通道
+    else:
+        # RGB (N, H, W, 3) 转换为灰度 (N, H, W)
+        x_train_gray = rbg_to_grayscale_pt(images_tensor)
+
+
+    # 展平并截断/重复 (现在 stolen_data_flat 的顺序就是 Client 0, Client 1, ...)
+    stolen_data_flat = x_train_gray.flatten()
+
+    if stolen_data_flat.numel() < num_target_params:
+        print(f"[CVEA Warning] Not enough data for attack. Available: {stolen_data_flat.numel()}")
+        # 如果数据不够，重复数据来匹配长度
+        num_repeats = (num_target_params + stolen_data_flat.numel() - 1) // stolen_data_flat.numel()
+        stolen_data_flat = stolen_data_flat.repeat(num_repeats)[:num_target_params]
+    else:
+        stolen_data_flat = stolen_data_flat[:num_target_params]
+
+    # 归一化和中心化 (得到 d_m)
+    # 假设 normalize_pt 函数存在
+    stolen_data_normalized = normalize_pt(stolen_data_flat)
+    d_mean = torch.mean(stolen_data_normalized)
+    d_m_attack = stolen_data_normalized - d_mean
+
+    # 将 d_m 移到 args.device
+    d_m_attack = d_m_attack.to(args.device)
+    print(f"[CVEA Attack] Prepared d_m with length {d_m_attack.numel()}")
+
+    return d_m_attack
+
 # 相关值编码攻击
 # 返回值是相关系数，值的范围是[-1, 1]
 def cor_attack(model, d_m):
@@ -198,7 +351,7 @@ def cor_attack(model, d_m):
 
 
 # 评估窃取到的数据与原始数据的相似性
-def calculate_cor_mape(model, x_train):
+def calculate_cor_mape(model, x_train, args):
     # 遍历模型的所有可训练参数并展平
     params = []
     for param in model.parameters():
@@ -225,7 +378,7 @@ def calculate_cor_mape(model, x_train):
         x_train = x_train.squeeze(-1)
         
     num_pixel = int(np.prod(x_train.shape[1:]))
-    num_image = int(len(params) / num_pixel)
+    num_image = args.num_users
     
     params = params[:num_image * num_pixel]
     # x_train 的形状是 (N, H, W)
@@ -280,6 +433,75 @@ def recover_cor_stolen_data(model, x_train):
     params = params.reshape(number, x_train.shape[1], x_train.shape[2])
     
     # 重映射到 [0, 255]
+    params = (params * 255 * scale_factor).astype(np.uint8)
+    
+    return params
+
+
+# 假设 normalize, scale_factor, cal_error, ImageOps, Image 已经从相应的库中导入
+
+def recover_cor_stolen_data_new(model, x_train):
+    
+    # 提取目标权重并展平
+    params = []
+    
+    # 攻击目标是第一个维度 > 1 的权重张量
+    target_param_found = False
+    for name, param in model.named_parameters():
+        if param.dim() > 1:
+            params = param.detach().cpu().numpy().reshape(-1, 1)
+            target_param_found = True
+            break # 仅恢复第一个满足条件的权重张量
+            
+    if not target_param_found:
+        print("Model has no suitable parameters to recover (dim > 1).")
+        return np.array([])
+        
+    # params 现在是目标权重张量展平后的 NumPy 向量 (Total_Params, 1)
+
+    # 归一化处理 [0, 1]
+    # 窃取参数 w - d_mean 后的值是归一化过的
+    params = normalize(params)
+    
+    # 确定恢复图片的数量和尺寸 (基于 x_train)
+    
+    # 检查 x_train 的形状
+    if x_train.ndim == 4 and x_train.shape[-1] == 1:
+        x_train = x_train.squeeze(-1)
+        
+    # H * W
+    pix_per_image = np.prod(x_train.shape[1:]) 
+    
+    # 目标图片数量
+    NUM_TARGET_IMAGES = x_train.shape[0] # 使用实际提供的图片数量，应为 100
+    
+    # 我们需要的总参数数量 = 目标图片数量 * 每张图片的像素数
+    target_params_len = NUM_TARGET_IMAGES * pix_per_image
+    
+    print(f"Target images to recover: {NUM_TARGET_IMAGES}")
+    print(f"Pixels per image: {pix_per_image}")
+    
+    # 截断/提取需要恢复的参数
+    if params.shape[0] < target_params_len:
+        print(f"[Recovery Warning] Model parameters ({params.shape[0]}) less than target recovery size ({target_params_len}).")
+        # 如果参数不够，则只恢复能恢复的部分
+        params = params[0 : (params.shape[0] // pix_per_image) * pix_per_image]
+    else:
+        # 提取对应于 NUM_TARGET_IMAGES 的参数
+        params = params[0 : target_params_len] 
+
+    # 重新组织成图片的格式 (N, H, W)
+    params = params.reshape(NUM_TARGET_IMAGES, x_train.shape[1], x_train.shape[2])
+    
+    # 重映射到 [0, 255] (反向去标准化)
+    # 这一步的反向操作需要和 prepare_cvea_stolen_data_pt 中的 normalize_pt 保持一致。
+    # 如果 prepare_cvea_stolen_data_pt 在 normalize 之前除以了 scale_factor (如 300.0)，
+    # 那么这里需要乘回来。
+    
+    # 假设 normalize(x) 将数据映射到 [0, 1]
+    # 假设 prepare_cvea_stolen_data_pt 使用了类似 (x - mean) / std 的标准化，
+    # 但最终的 d_m 是 (d_m / scale_factor)
+    
     params = (params * 255 * scale_factor).astype(np.uint8)
     
     return params

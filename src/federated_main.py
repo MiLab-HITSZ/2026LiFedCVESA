@@ -16,7 +16,7 @@ from tensorboardX import SummaryWriter
 from options import args_parser
 from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, CNNCifar_new
-from utils import get_dataset, average_weights, exp_details, get_raw_dataset
+from utils import *
 from attack_utils import *
 
 from torch.utils.data import DataLoader
@@ -48,7 +48,7 @@ if __name__ == '__main__':
     # 提取 NumPy 格式的灰度图像用于 MAPE 对比
     # 维度顺序变换(C, H, W)-->(H, W, C), 值范围变为0-255，转换为灰度
     # 保持了24*24的裁剪
-    x_train_gray_np = get_x_train_gray_np(train_dataset)
+    x_train_gray_np = get_ordered_target_images_np(train_dataset, user_groups, args.num_users)
     x_trainen_en_gray_np = get_x_train_gray_np(train_endataset)
 
     # BUILD MODEL
@@ -83,7 +83,7 @@ if __name__ == '__main__':
     args.device = device
     # 传入数据集:raw:只进行裁剪到24*24 和 ToTensor（维度顺序变换(H, W, C)-->(C, H, W)，值范围变为0-1）
     # 拿到的是:raw转为灰度 (N, H, W)，且经过归一化和中心化，且最终展平，值范围是-1到1
-    stolen_data_dm = prepare_cvea_stolen_data_pt(global_model, train_dataset, args)
+    stolen_data_dm = prepare_cvea_stolen_data(global_model, train_dataset, args, user_groups)
     stolen_data_dm = stolen_data_dm / scale_factor
 
     # Training
@@ -117,8 +117,16 @@ if __name__ == '__main__':
             local_weights.append(copy.deepcopy(w))
             local_losses.append(copy.deepcopy(loss))
 
+        # 获取上一轮的全局权重作为基准
+        prev_global_weights = copy.deepcopy(global_model.state_dict())
+
         # update global weights
-        global_weights = average_weights(local_weights)
+        if args.gama > 0:
+        # 使用分段聚合，并传入参与本轮训练的客户端 ID 列表
+            global_weights = segmented_average_weights(local_weights, idxs_users, prev_global_weights)
+        else:
+            # 否则，使用标准平均聚合
+            global_weights = average_weights(local_weights)
 
         # update global weights
         global_model.load_state_dict(global_weights)
@@ -150,7 +158,7 @@ if __name__ == '__main__':
         current_mape = 0.0
         if stolen_data_dm is not None and args.gama > 0:
             # 简化后的 MAPE 计算
-            current_mape = calculate_cor_mape(global_model, x_train_gray_np) 
+            current_mape = calculate_cor_mape(global_model, x_train_gray_np, args) 
             mape_list.append(current_mape)
 
         global_rounds.set_description(f"Epoch {epoch+1} | Loss: {loss_avg:.4f} | Mape: {current_mape:.4f}")
@@ -256,7 +264,7 @@ if __name__ == '__main__':
         # 恢复窃取数据 (NumPy 数组, 灰度 [0, 255])
         # x_train_gray_np 必须在 federated_main.py 顶部已定义
         # recover_cor_stolen_data 必须在 attack_utils.py 中定义
-        recovered_images = recover_cor_stolen_data(global_model, x_train_gray_np)
+        recovered_images = recover_cor_stolen_data_new(global_model, x_train_gray_np)
         
         if recovered_images.size > 0:
             num_images_to_plot = min(5, recovered_images.shape[0])
