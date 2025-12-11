@@ -18,6 +18,7 @@ from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, CNNCifar_new
 from utils import *
 from attack_utils import *
+from plot import *
 
 from torch.utils.data import DataLoader
 from PIL import Image, ImageOps
@@ -85,6 +86,11 @@ if __name__ == '__main__':
     # 拿到的是:raw转为灰度 (N, H, W)，且经过归一化和中心化，且最终展平，值范围是-1到1
     stolen_data_dm = prepare_cvea_stolen_data(global_model, train_dataset, args, user_groups)
     stolen_data_dm = stolen_data_dm / scale_factor
+
+    # ---------------temp------------------ #
+    plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images from Clients", rows=2)
+    plot_stolen_data_dm(stolen_data_dm, H=24, W=24, num_images=100, num_to_plot=10)
+    # ---------------temp------------------ #
 
     # Training
     train_loss, train_accuracy = [], []
