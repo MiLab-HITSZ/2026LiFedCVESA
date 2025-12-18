@@ -7,4 +7,4 @@ python src/federated_main.py \
     --lr=0.15 \
     --local_bs=50 \
     --local_ep=5 \
-    --gama=0.5
+    --gama=0.1

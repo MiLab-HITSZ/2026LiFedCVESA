@@ -110,7 +110,7 @@ def get_ordered_target_images_np(dataset, user_groups, num_users):
     
     # 获取原始数据集的 transform，以便进行反向操作（去标准化、转换格式）
     # train_dataset 是通过 get_raw_dataset 获取的，它只做了 ToTensor 和裁剪，
-    # 可以直接处理 Tensor 并转换为 NumPy 灰度格式 [0, 255]。
+    # 直接处理 Tensor 并转换为 NumPy 灰度格式 [0, 255]。
 
     # 提取并转换为 NumPy 格式 (H, W)
     for idx in target_indices:
@@ -128,10 +128,10 @@ def get_ordered_target_images_np(dataset, user_groups, num_users):
             else: 
                 # 彩图 (3, H, W) -> (H, W, 3)
                 image_np = image_tensor.permute(1, 2, 0).numpy()
-                # 转换为灰度 (使用简单的平均法，或确保在外部实现一致的 rbg_to_grayscale_pt 逻辑)
+                # 转换为灰度
                 if image_np.shape[-1] == 3:
-                    # 简单灰度转换 (确保和 prepare_cvea_stolen_data_pt 逻辑一致)
-                    image_np = np.dot(image_np[...,:3], [0.2989, 0.5870, 0.1140]) # ITU-R BT.601
+                    # 灰度转换 
+                    image_np = np.dot(image_np[...,:3], [0.2989, 0.5870, 0.1140])
         else: # 已经是 (H, W) 
             image_np = image_tensor.numpy()
         
@@ -216,10 +216,10 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
     print(f"\n[CVEA Attack] Preparing stolen data with gama={args.gama}")
 
     # 获取目标权重总数
-    num_target_params = 0
-    # 攻击只针对维度 > 1 的权重 (Conv/Linear weights)
-    for name, param in net_glob.named_parameters():
-        num_target_params += param.numel()
+    num_target_params = args.num_users * 576  # 每个客户端对应一张 24x24 的图片
+    # 获取模型全部参数数量
+    # for name, param in net_glob.named_parameters():
+    #     num_target_params += param.numel()
 
     if num_target_params == 0:
         print('Error: Model has no suitable parameters for CVEA attack.')
@@ -229,7 +229,7 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
 
     # 按客户端顺序构建索引列表
     
-    # 假设每个客户端至少有一张图片，且我们只关注每个客户端的第一张图片
+    # 每个客户端至少有一张图片，且我们只关注每个客户端的第一张图片
     # 创建一个空的索引列表，用于存储目标图片的索引
     target_indices = []
     
@@ -238,8 +238,7 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
         # user_groups[i] 是一个集合，包含客户端 i 的所有数据索引
         try:
             # 找到客户端 i 拥有的第一个索引
-            # set 是无序的，使用 list(set)[0] 可能会带来细微的顺序不确定性，
-            # 但在 IID/Non-IID 分组后，通常集合中的第一个元素是可重复访问的。
+            # 在 IID/Non-IID 分组后，集合中的第一个元素是可重复访问的。
             first_image_index = list(user_groups[i])[0]
             target_indices.append(first_image_index)
         except IndexError:
