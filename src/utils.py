@@ -192,92 +192,57 @@ def average_weights(w):
 import torch
 import copy
 
+import torch
+import copy
+
 def segmented_average_weights(local_weights, idxs_users, prev_global_weights):
 
     M = len(local_weights)
-    
-    # 初始化全局权重 (w_avg) 为上一轮的全局权重作为基准
-    w_avg = copy.deepcopy(prev_global_weights) 
-    
-    # 图片像素的展平尺寸，例如 24*24 = 576
-    SEGMENT_SIZE = 576 
-    
-    # 客户端总数 K=100
-    # 这是一个关键的假设，必须与数据划分时的 num_users 一致。
-    K = 100 
-    total_target_params = K * SEGMENT_SIZE # 57600
-    
-    # 用于计算 FedAvg 的临时字典
-    temp_avg = copy.deepcopy(local_weights[0])
-    
-    # 用于追踪当前全局参数索引，以映射到正确的客户端分段
-    current_param_count = 0 
+    SEGMENT_SIZE = 576
+    K = 100
+    THRESHOLD = K * SEGMENT_SIZE # 57600
 
-    for key in w_avg.keys():
+    # 获取模型结构信息并展平所有参数
+    layer_keys = prev_global_weights.keys()
+    layer_shapes = {k: prev_global_weights[k].shape for k in layer_keys}
+    
+    def flatten_weights(w_dict):
+        return torch.cat([w_dict[k].flatten() for k in layer_keys])
+
+    # 展平上一轮全局权重作为基准
+    global_flat = flatten_weights(prev_global_weights)
+    
+    # 展平所有参与本轮的本地权重
+    local_flats = [flatten_weights(lw) for lw in local_weights]
+
+    # 处理前 57600 个参数
+    for i in range(M):
+        client_id = idxs_users[i]
+        start_idx = client_id * SEGMENT_SIZE
+        end_idx = (client_id + 1) * SEGMENT_SIZE
         
-        if w_avg[key].dim() < 1:
-            # 计算该层的平均值
-            for i in range(1, M):
-                temp_avg[key] += local_weights[i][key]
-            temp_avg[key] = torch.div(temp_avg[key], M)
-            
-            # 用平均值覆盖 w_avg 中的非目标参数
-            w_avg[key] = temp_avg[key]
-            
-        # 对目标层（维度 >= 1）执行分段覆盖
-        elif w_avg[key].dim() >= 1 and current_param_count < total_target_params:
-            
-            param = w_avg[key]
-            w_avg_flat = param.flatten()
-            original_shape = param.shape
-            
-            # 当前层的所有参数数量
-            numel_current_layer = w_avg_flat.numel()
-            
-            # 遍历参与本轮训练的 M 个客户端
-            for i in range(M):
-                client_index = idxs_users[i] # 客户端的全局 ID
-                local_weights_i = local_weights[i]
-                
-                # 计算该客户端的分段在全局拼接向量中的起始和结束索引
-                global_start_idx = client_index * SEGMENT_SIZE
-                global_end_idx = (client_index + 1) * SEGMENT_SIZE
-                
-                # 检查该客户端的分段是否落入当前模型层所覆盖的范围
-                # 范围定义：[current_param_count, current_param_count + numel_current_layer)
-                
-                # 客户端分段的起点在当前层之后，跳过
-                if global_start_idx >= current_param_count + numel_current_layer:
-                    continue
-                
-                # 客户端分段的终点在当前层起点之前，跳过 (这种情况不应该发生，因为按顺序遍历)
-                if global_end_idx <= current_param_count:
-                    continue
-                
-                # === 核心逻辑：计算本地偏移量并执行覆盖 ===
-                
-                # 确定该分段在当前层的本地起始和结束索引
-                # local_start_offset 是该分段在 w_avg_flat 中的起始位置
-                local_start_offset = global_start_idx - current_param_count
-                local_end_offset = local_start_offset + SEGMENT_SIZE
-                
-                # 边界检查：确保分段没有超出当前层的参数数量
-                if local_end_offset <= numel_current_layer:
-                    
-                    # 获取该客户端本地更新的该层参数的展平版本
-                    local_update_flat = local_weights_i[key].flatten()
-                    
-                    # 覆盖全局基准（prev_global_weights）中对应的分段
-                    w_avg_flat[local_start_offset:local_end_offset] = local_update_flat[local_start_offset:local_end_offset]
-                
-            # 将更新后的展平张量重新塑形并放回 w_avg
-            w_avg[key] = w_avg_flat.reshape(original_shape)
-            
-            # 更新全局参数计数器，指向下一个层的起点
-            current_param_count += numel_current_layer
-            
-    # 返回聚合后的全局权重
-    return w_avg
+        # 只有在 THRESHOLD 范围内的部分才执行覆盖
+        if start_idx < THRESHOLD:
+            # 取该客户端对应的分段，直接覆盖全局对应位置
+            global_flat[start_idx:end_idx] = local_flats[i][start_idx:end_idx]
+
+    # 处理 57600 之后的参数
+    if global_flat.numel() > THRESHOLD:
+        # 提取所有客户端在 57600 之后的部分
+        extra_params_stack = torch.stack([lf[THRESHOLD:] for lf in local_flats])
+        # 计算平均值并更新全局长向量
+        global_flat[THRESHOLD:] = torch.mean(extra_params_stack, dim=0)
+
+    # 将长向量重新装填回 state_dict 结构
+    new_global_weights = {}
+    current_ptr = 0
+    for k in layer_keys:
+        numel = prev_global_weights[k].numel()
+        # 从长向量中截取对应长度并重塑形状
+        new_global_weights[k] = global_flat[current_ptr : current_ptr + numel].reshape(layer_shapes[k])
+        current_ptr += numel
+
+    return new_global_weights
 
 def exp_details(args):
     print('\nExperimental details:')

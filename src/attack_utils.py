@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image, ImageOps
 from torch.utils.data import DataLoader, Dataset
 
-scale_factor = 300.0
+scale_factor = 100.0
 
 def rbg_to_grayscale_pt(images: torch.Tensor) -> torch.Tensor:
     # 灰度转换系数 

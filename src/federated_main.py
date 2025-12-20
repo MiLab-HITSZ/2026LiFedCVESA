@@ -25,7 +25,7 @@ from PIL import Image, ImageOps
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
-scale_factor = 300.0
+scale_factor = 100.0
 
 if __name__ == '__main__':
     start_time = time.time()
