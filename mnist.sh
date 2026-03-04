@@ -1,10 +1,10 @@
 python src/federated_main.py \
-    --model=cnn \
+    --model=mlp \
     --dataset=mnist \
     --gpu=1 \
     --iid=1 \
-    --epochs=500 \
+    --epochs=210 \
     --lr=0.01 \
-    --local_bs=50 \
-    --local_ep=5 \
-    --gama=0.5
+    --local_bs=10 \
+    --local_ep=10 \
+    --gama=0.2

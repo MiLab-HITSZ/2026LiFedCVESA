@@ -15,7 +15,7 @@ from tensorboardX import SummaryWriter
 
 from options import args_parser
 from update import LocalUpdate, test_inference
-from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, CNNCifar_new
+from models import *
 from utils import *
 from attack_utils import *
 from plot import *
@@ -25,7 +25,8 @@ from PIL import Image, ImageOps
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
-scale_factor = 100.0
+# 移除scale_factor，让窃取数据保持在[-0.5, 0.5]范围，与模型参数尺度匹配
+# scale_factor = 1000.0  # 原来除以1000导致数据尺度太小
 
 if __name__ == '__main__':
     start_time = time.time()
@@ -36,6 +37,9 @@ if __name__ == '__main__':
 
     args = args_parser()
     exp_details(args)
+    
+    # 使用 getattr 安全地获取 gama，如果未设置则默认为 0.0
+    gama_val = getattr(args, 'gama', 0.0)
 
     if args.gpu:
         torch.cuda.set_device(int(args.gpu))
@@ -49,6 +53,7 @@ if __name__ == '__main__':
     # 提取 NumPy 格式的灰度图像用于 MAPE 对比
     # 维度顺序变换(C, H, W)-->(H, W, C), 值范围变为0-255，转换为灰度
     # 保持了24*24的裁剪
+    # 只提取前10个客户端的图片（原来是 args.num_users = 100）
     x_train_gray_np = get_ordered_target_images_np(train_dataset, user_groups, args.num_users)
     x_trainen_en_gray_np = get_x_train_gray_np(train_endataset)
 
@@ -56,11 +61,11 @@ if __name__ == '__main__':
     if args.model == 'cnn':
         # Convolutional neural netork
         if args.dataset == 'mnist':
-            global_model = CNNMnist(args=args)
+            global_model = CNNFashion_Enhanced(args=args)
         elif args.dataset == 'fmnist':
-            global_model = CNNFashion_Mnist(args=args)
+            global_model = CNNFashion_Enhanced(args=args)
         elif args.dataset == 'cifar':
-            global_model = CNNCifar_new(args=args)
+            global_model = CNNCifar_Enhanced_V3(args=args)
 
     elif args.model == 'mlp':
         # Multi-layer preceptron
@@ -83,13 +88,15 @@ if __name__ == '__main__':
 
     args.device = device
     # 传入数据集:raw:只进行裁剪到24*24 和 ToTensor（维度顺序变换(H, W, C)-->(C, H, W)，值范围变为0-1）
-    # 拿到的是:raw转为灰度 (N, H, W)，且经过归一化和中心化，且最终展平，值范围是-1到1
+    # 拿到的是:raw转为灰度 (N, H, W)，且经过归一化和中心化，且最终展平，值范围约为[-0.5, 0.5]
     stolen_data_dm = prepare_cvea_stolen_data(global_model, train_dataset, args, user_groups)
-    stolen_data_dm = stolen_data_dm / scale_factor
+    # 不再除以scale_factor，保持数据在合理尺度
+    # stolen_data_dm = stolen_data_dm / scale_factor
 
     # ---------------temp------------------ #
-    plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images from Clients", rows=2)
-    plot_stolen_data_dm(stolen_data_dm, H=24, W=24, num_images=100, num_to_plot=10)
+    if args.gama > 0:
+        plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images from Clients", rows=2)
+        plot_stolen_data_dm(stolen_data_dm, H=24, W=24, num_images=10, num_to_plot=10)
     # ---------------temp------------------ #
 
     # Training
@@ -112,8 +119,33 @@ if __name__ == '__main__':
         # print(f'\n | Global Training Round : {epoch+1} |\n')
 
         global_model.train()
-        m = max(int(args.frac * args.num_users), 1)
-        idxs_users = np.random.choice(range(args.num_users), m, replace=False)
+        
+        # 确保前10个目标客户端每轮都参与训练（攻击关键）
+        NUM_TARGET_CLIENTS = 10
+        if args.gama > 0:
+            # 攻击模式：前10个客户端必须参与，其余随机选择
+            target_clients = list(range(NUM_TARGET_CLIENTS))  # [0, 1, 2, ..., 9]
+            m = max(int(args.frac * args.num_users), NUM_TARGET_CLIENTS)
+            
+            # 从剩余客户端中随机选择
+            remaining_slots = m - NUM_TARGET_CLIENTS
+            if remaining_slots > 0 and args.num_users > NUM_TARGET_CLIENTS:
+                other_clients = np.random.choice(
+                    range(NUM_TARGET_CLIENTS, args.num_users), 
+                    min(remaining_slots, args.num_users - NUM_TARGET_CLIENTS), 
+                    replace=False
+                ).tolist()
+                idxs_users = target_clients + other_clients
+            else:
+                idxs_users = target_clients
+            
+            # 【调试】打印参与训练的客户端
+            if epoch % 10 == 0:
+                tqdm.write(f'[Debug] Epoch {epoch+1} - Participating clients: {sorted(idxs_users)[:15]}...')
+        else:
+            # 正常模式：随机采样
+            m = max(int(args.frac * args.num_users), 1)
+            idxs_users = np.random.choice(range(args.num_users), m, replace=False)
 
         for idx in idxs_users:
             local_model = LocalUpdate(args=args, dataset=train_endataset,
@@ -166,6 +198,54 @@ if __name__ == '__main__':
             # 简化后的 MAPE 计算
             current_mape = calculate_cor_mape(global_model, x_train_gray_np, args) 
             mape_list.append(current_mape)
+            
+            # 每10个epoch恢复一次窃取图片并保存
+            if (epoch + 1) % 10 == 0 or epoch == 0:  # 每10轮或第1轮恢复一次
+                recovered_images = recover_cor_stolen_data_new(global_model, x_train_gray_np)
+                
+                if recovered_images.size > 0:
+                    num_images_to_plot = min(5, recovered_images.shape[0])
+                    original_images = x_train_gray_np[:num_images_to_plot]
+                    
+                    import matplotlib
+                    import matplotlib.pyplot as plt
+                    matplotlib.use('Agg')
+                    
+                    fig, axes = plt.subplots(2, num_images_to_plot, figsize=(15, 6))
+                    fig.suptitle(f'Epoch {epoch+1}: Original vs. Recovered (MAPE={current_mape:.4f}, Gama={gama_val})', fontsize=16)
+                    
+                    for i in range(num_images_to_plot):
+                        # 原始图像
+                        axes[0, i].imshow(original_images[i], cmap='gray')
+                        axes[0, i].set_title(f'Original {i+1}')
+                        axes[0, i].axis('off')
+                        
+                        # 恢复图像
+                        img_i = recovered_images[i]
+                        img_inverted_np = np.asarray(ImageOps.invert(Image.fromarray(img_i)))
+                        
+                        err1 = cal_error(img_i, original_images[i])
+                        err2 = cal_error(img_inverted_np, original_images[i])
+                        
+                        if err1 < err2:
+                            axes[1, i].imshow(img_i, cmap='gray')
+                            axes[1, i].set_title(f'Recovered {i+1}\n(Err:{err1:.4f})')
+                        else:
+                            axes[1, i].imshow(img_inverted_np, cmap='gray')
+                            axes[1, i].set_title(f'Recovered-Inv {i+1}\n(Err:{err2:.4f})')
+                        
+                        axes[1, i].axis('off')
+                    
+                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                    
+                    # 保存到epoch专用目录
+                    epoch_plot_dir = './save/plots/epoch_recovery'
+                    os.makedirs(epoch_plot_dir, exist_ok=True)
+                    plot_save_path = os.path.join(epoch_plot_dir, f'epoch_{epoch+1:03d}_recovery_{args.dataset}.png')
+                    plt.savefig(plot_save_path, dpi=150)
+                    plt.close(fig)
+                    
+                    tqdm.write(f'[Epoch {epoch+1}] Recovery plot saved to {plot_save_path}')
 
         global_rounds.set_description(f"Epoch {epoch+1} | Loss: {loss_avg:.4f} | Mape: {current_mape:.4f}")
 
@@ -205,8 +285,6 @@ if __name__ == '__main__':
     print("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
 
     # 定义包含攻击参数的文件名基准
-    # 使用 getattr 安全地获取 gama，如果未设置则默认为 0.0
-    gama_val = getattr(args, 'gama', 0.0)
     result_file_base = '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}]_Gama[{}]'.format(
         args.dataset, args.model, args.epochs, args.frac, args.iid,
         args.local_ep, args.local_bs, gama_val)
@@ -262,13 +340,11 @@ if __name__ == '__main__':
         plt.xlabel('Communication Rounds')
         plt.savefig(os.path.join(plot_dir, '{}_mape.png'.format(result_file_base)))
         
-    # 图像恢复和对比绘图
+    # 图像恢复和对比绘图（训练结束后的最终版本）
     if stolen_data_dm is not None and gama_val > 0:
-        print('\nStarting data recovery and plotting...')
+        print('\n[Final] Starting final data recovery and plotting...')
         
         # 恢复窃取数据 (NumPy 数组, 灰度 [0, 255])
-        # x_train_gray_np 必须在 federated_main.py 顶部已定义
-        # recover_cor_stolen_data 必须在 attack_utils.py 中定义
         recovered_images = recover_cor_stolen_data_new(global_model, x_train_gray_np)
         
         if recovered_images.size > 0:
@@ -278,7 +354,7 @@ if __name__ == '__main__':
             original_images = x_train_gray_np[:num_images_to_plot]
 
             fig, axes = plt.subplots(2, num_images_to_plot, figsize=(15, 6))
-            fig.suptitle(f'CVEA: Original vs. Recovered Data (Gama={gama_val})', fontsize=16)
+            fig.suptitle(f'[FINAL] CVEA: Original vs. Recovered Data (Gama={gama_val})', fontsize=16)
 
             for i in range(num_images_to_plot):
                 # 原始图像
@@ -308,10 +384,11 @@ if __name__ == '__main__':
             
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
             
-            # 保存对比图
-            plot_save_path = os.path.join(plot_dir, '{}_gama_comparison.png'.format(result_file_base))
+            # 保存最终对比图
+            plot_save_path = os.path.join(plot_dir, '{}_final_comparison.png'.format(result_file_base))
             plt.savefig(plot_save_path)
-            print(f'Comparison plot saved to {plot_save_path}')
+            print(f'[Final] Comparison plot saved to {plot_save_path}')
+            print(f'[Info] Epoch-wise recovery plots are saved in ./save/plots/epoch_recovery/')
             
         else:
             print("No images were recovered for plotting.")

@@ -65,6 +65,53 @@ class CNNFashion_Mnist(nn.Module):
         out = self.fc(out)
         return F.log_softmax(out, dim=1)
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CNNFashion_Enhanced(nn.Module):
+    def __init__(self, args):
+        super(CNNFashion_Enhanced, self).__init__()
+        
+        # --- 核心修改 1：输入通道从 3 改为 1 (FashionMNIST 是黑白图) ---
+        # 保持 bias=False 以利于梯度泄露攻击 (DLG/iDLG)
+        self.conv1 = nn.Conv2d(1, 80, kernel_size=5, padding=2, bias=False)
+        self.gn1 = nn.GroupNorm(8, 80) 
+        self.act1 = nn.LeakyReLU(0.1)
+        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2) 
+
+        # 第二层：保持 128 通道
+        self.conv2 = nn.Conv2d(80, 128, kernel_size=3, padding=1)
+        self.gn2 = nn.GroupNorm(8, 128)
+        self.act2 = nn.LeakyReLU(0.1)
+        self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2) 
+        
+        # --- 核心修改 2：重新计算特征图尺寸 ---
+        # 输入: 1x28x28
+        # Conv1(5x5, p2) -> 80x28x28 -> Pool1(2x2) -> 80x14x14
+        # Conv2(3x3, p1) -> 128x14x14 -> Pool2(2x2) -> 128x7x7
+        # 计算: 128 * 7 * 7 = 6272
+        self.flat_features = 6272 
+        
+        self.fc1 = nn.Linear(self.flat_features, 512)
+        self.dropout = nn.Dropout(0.3) 
+        self.act3 = nn.ReLU() 
+        
+        self.fc2 = nn.Linear(512, 128)
+        self.fc3 = nn.Linear(128, args.num_classes)
+
+    def forward(self, x):
+        # 注意：FashionMNIST 只有 1 个通道 [batch, 1, 28, 28]
+        x = self.pool1(self.act1(self.gn1(self.conv1(x))))
+        x = self.pool2(self.act2(self.gn2(self.conv2(x))))
+        
+        # 展平层
+        x = x.view(x.size(0), -1) 
+        
+        x = self.dropout(self.act3(self.fc1(x)))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return F.log_softmax(x, dim=1)
 
 class CNNCifar(nn.Module):
     def __init__(self, args):
@@ -90,62 +137,223 @@ class CNNCifar_new(nn.Module):
         super(CNNCifar_new, self).__init__()
         
         # 1. 第一个卷积层
-        # 输入: 24x24x3
-        # 输出: 24x24x64（通过零填充维持尺寸）
+        # 输入: 24x24x3 -> 输出: 24x24x64
         self.conv1 = nn.Conv2d(in_channels=3, 
                                out_channels=64, 
                                kernel_size=5, 
-                               padding=2) # padding=2 保持 24x24 尺寸
+                               padding=2)
+        # LayerNorm 对于卷积层，需要指定 [C, H, W]
+        self.ln1 = nn.LayerNorm([64, 24, 24]) 
         self.relu1 = nn.ReLU()
-        # Max Pooling: 2x2, stride=2
-        # 输出: 12x12x64
-        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1) # 论文中的教程常用 3x3 窗口
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1) # 输出: 12x12x64
 
         # 2. 第二个卷积层
-        # 输入: 12x12x64
-        # 输出: 12x12x64（通过零填充维持尺寸）
+        # 输入: 12x12x64 -> 输出: 12x12x64
         self.conv2 = nn.Conv2d(in_channels=64, 
                                out_channels=64, 
                                kernel_size=5, 
-                               padding=2) # padding=2 保持 12x12 尺寸
+                               padding=2)
+        # LayerNorm: 此时特征图尺寸已减半
+        self.ln2 = nn.LayerNorm([64, 12, 12])
         self.relu2 = nn.ReLU()
-        # Max Pooling: 2x2, stride=2
-        # 输出: 6x6x64
-        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1) # 论文中的教程常用 3x3 窗口
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1) # 输出: 6x6x64
         
-        # 展平后的特征数量: 6 * 6 * 64 = 2304
         flat_features = 6 * 6 * 64
         
         # 3. 第一个全连接层
         self.fc1 = nn.Linear(flat_features, 384) 
+        self.ln_fc1 = nn.LayerNorm(384) # 全连接层 LN 只需指定特征数
         
         # 4. 第二个全连接层
         self.fc2 = nn.Linear(384, 192)
+        self.ln_fc2 = nn.LayerNorm(192)
         
-        # 5. 线性变换层 (输出 Logits)
+        # 5. 线性变换层
         self.fc3 = nn.Linear(192, args.num_classes)
 
     def forward(self, x):
-        # Conv 1 -> ReLU -> Pool 1
-        x = self.pool1(self.relu1(self.conv1(x)))
+        # Conv 1 -> LN -> ReLU -> Pool
+        # 注意：LayerNorm 放在 ReLU 之前是更常用的做法
+        x = self.conv1(x)
+        x = self.ln1(x)
+        x = self.relu1(x)
+        x = self.pool1(x)
         
-        # Conv 2 -> ReLU -> Pool 2
-        x = self.pool2(self.relu2(self.conv2(x)))
+        # Conv 2 -> LN -> ReLU -> Pool
+        x = self.conv2(x)
+        x = self.ln2(x)
+        x = self.relu2(x)
+        x = self.pool2(x)
         
         # 展平
         x = x.view(x.size(0), -1) 
         
-        # FC 1 -> ReLU
-        x = F.relu(self.fc1(x))
+        # FC 1 -> LN -> ReLU
+        x = self.fc1(x)
+        x = self.ln_fc1(x)
+        x = F.relu(x)
         
-        # FC 2 -> ReLU
-        x = F.relu(self.fc2(x))
+        # FC 2 -> LN -> ReLU
+        x = self.fc2(x)
+        x = self.ln_fc2(x)
+        x = F.relu(x)
         
         # FC 3 (Logits)
         x = self.fc3(x)
         
-        return F.log_softmax(x, dim=1) 
-        # return x
+        return F.log_softmax(x, dim=1)
+
+class CNNCifar_Enhanced(nn.Module):
+    def __init__(self, args):
+        super(CNNCifar_Enhanced, self).__init__()
+        
+        # 第一层：保持 80 通道，5x5 卷积，无 Bias 以利于攻击
+        self.conv1 = nn.Conv2d(3, 80, kernel_size=5, padding=2, bias=False)
+        self.gn1 = nn.GroupNorm(8, 80) 
+        self.act1 = nn.LeakyReLU(0.1)
+        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2) 
+
+        # 第二层：增加到 128 通道提升表达能力
+        self.conv2 = nn.Conv2d(80, 128, kernel_size=3, padding=1)
+        self.gn2 = nn.GroupNorm(8, 128)
+        self.act2 = nn.LeakyReLU(0.1)
+        self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2) 
+        
+        # --- 修复逻辑 ---
+        # 根据报错信息，这里的输入应该是 4608
+        # 计算公式：通道数(128) * 特征图宽(6) * 特征图高(6) = 4608
+        self.flat_features = 4608 
+        
+        self.fc1 = nn.Linear(self.flat_features, 512)
+        self.dropout = nn.Dropout(0.3) 
+        self.act3 = nn.ReLU() 
+        
+        self.fc2 = nn.Linear(512, 128)
+        self.fc3 = nn.Linear(128, args.num_classes)
+
+    def forward(self, x):
+        x = self.pool1(self.act1(self.gn1(self.conv1(x))))
+        x = self.pool2(self.act2(self.gn2(self.conv2(x))))
+        
+        # 展平层
+        x = x.view(x.size(0), -1) 
+        
+        x = self.dropout(self.act3(self.fc1(x)))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return F.log_softmax(x, dim=1)
+    
+class CNNCifar_Enhanced_V2(nn.Module):
+    def __init__(self, args):
+        super(CNNCifar_Enhanced_V2, self).__init__()
+        
+        # --- 攻击保留层 (第一层) ---
+        # 保持 80 通道和 5x5 卷积核，不加 Bias。
+        # 这确保了梯度中包含足够的像素映射信息，维持原有的攻击效果。
+        self.conv1 = nn.Conv2d(3, 80, kernel_size=5, padding=2, bias=False)
+        self.gn1 = nn.GroupNorm(8, 80) 
+        self.act1 = nn.GELU() # 换成平滑的 GELU
+        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2) # 32->16
+
+        # --- 增强提取层 (第二层 & 第三层) ---
+        self.conv2 = nn.Conv2d(80, 192, kernel_size=3, padding=1)
+        self.gn2 = nn.GroupNorm(12, 192)
+        self.act2 = nn.GELU()
+        
+        self.conv3 = nn.Conv2d(192, 256, kernel_size=3, padding=1)
+        self.gn3 = nn.GroupNorm(16, 256)
+        self.act3 = nn.GELU()
+        self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2) # 16->8
+        
+        # --- 分类头部 ---
+        # 使用自适应池化将特征图固定为 4x4，无论输入尺寸如何都不会报错
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
+        self.flat_features = 256 * 4 * 4 # = 4096
+        
+        self.fc1 = nn.Linear(self.flat_features, 512)
+        self.dropout = nn.Dropout(0.3) 
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, args.num_classes)
+
+    def forward(self, x):
+        # 卷积阶段
+        x = self.pool1(self.act1(self.gn1(self.conv1(x))))
+        x = self.act2(self.gn2(self.conv2(x)))
+        x = self.pool2(self.act3(self.gn3(self.conv3(x))))
+        
+        # 降维与展平
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1) 
+        
+        # 全连接阶段
+        x = self.dropout(F.relu(self.fc1(x)))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return F.log_softmax(x, dim=1)
+    
+class ResidualBlock(nn.Module):
+    """一个轻量级的残差块，用于提升分类准确率"""
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=stride, bias=False)
+        self.gn1 = nn.GroupNorm(8, out_channels)
+        self.act = nn.SiLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.gn2 = nn.GroupNorm(8, out_channels)
+        
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.GroupNorm(8, out_channels)
+            )
+
+    def forward(self, x):
+        out = self.act(self.gn1(self.conv1(x)))
+        out = self.gn2(self.conv2(out))
+        out += self.shortcut(x) # 跳跃连接
+        out = self.act(out)
+        return out
+
+class CNNCifar_Enhanced_V3(nn.Module):
+    def __init__(self, args):
+        super(CNNCifar_Enhanced_V3, self).__init__()
+        
+        # --- 1. 攻击层 (严禁修改，确保梯度泄露精度) ---
+        self.conv1 = nn.Conv2d(3, 80, kernel_size=5, padding=2, bias=False)
+        self.gn1 = nn.GroupNorm(8, 80)
+        self.act1 = nn.SiLU()
+        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2) # 32 -> 16
+
+        # --- 2. 增强骨干层 (使用残差块提升准确率) ---
+        self.res1 = ResidualBlock(80, 160)
+        self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2) # 16 -> 8
+        
+        self.res2 = ResidualBlock(160, 320)
+        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2) # 8 -> 4
+        
+        # --- 3. 高性能分类头 ---
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1)) # 全局平均池化
+        self.fc = nn.Sequential(
+            nn.Linear(320, 128),
+            nn.SiLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, args.num_classes)
+        )
+
+    def forward(self, x):
+        # 第一层保持原有逻辑
+        x = self.pool1(self.act1(self.gn1(self.conv1(x))))
+        
+        # 进入残差增强阶段
+        x = self.pool2(self.res1(x))
+        x = self.pool3(self.res2(x))
+        
+        # 展平分类
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)
 
 class modelC(nn.Module):
     def __init__(self, input_size, n_classes=10, **kwargs):

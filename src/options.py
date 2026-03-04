@@ -63,7 +63,7 @@ def args_parser():
 
     parser.add_argument('--lr_decay', type=float, default=0.99, 
                         help="learning rate decay factor per communication round")
-    parser.add_argument('--gama', type=float, default=0.0, 
+    parser.add_argument('--gama', type=float, default=0.1, 
                         help="The coefficient (gamma) for the CVEA attack regularization term. " \
                         "Set to 0.0 to disable attack.")
 

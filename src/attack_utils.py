@@ -4,7 +4,9 @@ import numpy as np
 from PIL import Image, ImageOps
 from torch.utils.data import DataLoader, Dataset
 
-scale_factor = 100.0
+# 移除scale_factor，不再对窃取数据进行额外缩放
+# 让窃取数据保持在[-0.5, 0.5]范围，与模型参数尺度匹配
+# scale_factor = 1000.0  # 原来除以1000导致数据尺度太小
 
 def rbg_to_grayscale_pt(images: torch.Tensor) -> torch.Tensor:
     # 灰度转换系数 
@@ -92,8 +94,9 @@ def get_ordered_target_images_np(dataset, user_groups, num_users):
 
     target_indices = []
     
-    # 提取每个客户端的第一张图片的索引
-    for i in range(num_users):
+    # 提取前10个客户端的第一张图片的索引（原来是 num_users = 100）
+    NUM_TARGET_CLIENTS = 10  # 窃取目标客户端数量
+    for i in range(NUM_TARGET_CLIENTS):
         try:
             # 获取客户端 i 的第一个数据索引
             first_image_index = list(user_groups[i])[0]
@@ -215,8 +218,9 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
 
     print(f"\n[CVEA Attack] Preparing stolen data with gama={args.gama}")
 
-    # 获取目标权重总数
-    num_target_params = args.num_users * 576  # 每个客户端对应一张 24x24 的图片
+    # 获取目标权重总数：从100个客户端改为10个客户端
+    NUM_TARGET_CLIENTS = 10  # 窃取目标客户端数量（原来是 args.num_users = 100）
+    num_target_params = NUM_TARGET_CLIENTS * 576  # 每个客户端对应一张 24x24 的图片，共10张
     # 获取模型全部参数数量
     # for name, param in net_glob.named_parameters():
     #     num_target_params += param.numel()
@@ -227,14 +231,14 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
 
     print(f"[CVEA Attack] Target parameter count: {num_target_params}")
 
-    # 按客户端顺序构建索引列表
+    # 按客户端顺序构建索引列表：只窃取前10个客户端的数据
     
     # 每个客户端至少有一张图片，且我们只关注每个客户端的第一张图片
     # 创建一个空的索引列表，用于存储目标图片的索引
     target_indices = []
     
-    # 遍历所有客户端 (K = args.num_users)
-    for i in range(args.num_users):
+    # 遍历前10个客户端（原来是 args.num_users = 100）
+    for i in range(NUM_TARGET_CLIENTS):
         # user_groups[i] 是一个集合，包含客户端 i 的所有数据索引
         try:
             # 找到客户端 i 拥有的第一个索引
@@ -305,6 +309,7 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
 # 相关值编码攻击
 # 返回值是相关系数的绝对值，作为损失，值的范围是[0, 1]
 def cor_attack(model, d_m):
+    # 只使用前5760个参数计算相关性，与分段聚合策略一致
     # 遍历模型的所有可训练参数并展平
     params = []
     
@@ -320,11 +325,17 @@ def cor_attack(model, d_m):
     # 拼接成一个大的向量 p_flat
     p_flat = torch.cat(params, dim=0)
     
+    # 只使用前 d_m.size(0) 个参数（即前5760个）
+    # 这样相关性计算只关注被攻击的参数段，不被其他参数稀释
+    target_len = d_m.size(0)  # 5760
+    if p_flat.size(0) < target_len:
+        # 如果模型参数不足，填充零
+        padding = torch.zeros(target_len - p_flat.size(0), device=p_flat.device, dtype=p_flat.dtype)
+        p_flat = torch.cat([p_flat, padding], dim=0)
     
-    # 攻击依赖于权重和秘密数据的长度匹配，这里截断长的那个
-    min_len = min(p_flat.size(0), d_m.size(0))
-    p_flat = p_flat[:min_len]
-    d_m = d_m[:min_len]
+    # 只取前 target_len 个参数
+    p_flat = p_flat[:target_len]
+    d_m = d_m[:target_len]
     
 
     # 计算中心化权重 p_m = params - mean(params)
@@ -353,76 +364,51 @@ def cor_attack(model, d_m):
 
 # 评估窃取到的数据与原始数据的相似性
 def calculate_cor_mape(model, x_train, args):
-    
-    # 遍历模型的所有可训练参数并展平拼接
+    # 1. 统一提取逻辑：必须与 cor_attack 中的参数提取完全一致
     params_list = []
-    
     for param in model.parameters():
-        # 提取所有参数，包括权重和偏置项
-        params_list.append(param.detach().cpu().numpy().reshape(-1))
-            
+        params_list.append(param.detach().cpu().numpy().flatten())
+    
     if not params_list:
         return 0.0
 
-    # 拼接成一个大的向量 (NumPy)
-    params = np.concatenate(params_list, axis=0).reshape(-1, 1)
+    params = np.concatenate(params_list)
     
-    # 对权重向量进行归一化处理 [0, 1]
-    params = normalize(params) 
+    # 2. 确定目标参数段
+    num_image = 10 
+    h, w = x_train.shape[1], x_train.shape[2]
+    num_pixel = h * w
+    target_len = num_image * num_pixel
     
-    # 权重重映射到 [0, 255]
-    # 这一步将归一化后的浮点数映射回可识别的像素范围
-    params = (params * 255).astype(np.uint8)
+    # 截取参与编码的那部分参数
+    params_segment = params[:target_len]
     
-    # 重新组织成图片的格式 (恢复图片)
-    
-    # x_train 是 (N, H, W) 或 (N, H, W, 1) 的灰度图
-    if x_train.ndim == 4 and x_train.shape[-1] == 1:
-        x_train = x_train.squeeze(-1)
-        
-    num_pixel = int(np.prod(x_train.shape[1:])) # H * W = 576
-    num_image = args.num_users                  # N = 100
-    
-    target_params_len = num_image * num_pixel # 57600
-    
-    # 截取前 target_params_len 个参数 (这些参数现在来自多层拼接)
-    # 如果总参数不够 57600，只截取能恢复的图片数量
-    params = params[:target_params_len] 
-    N_actual = params.shape[0] // num_pixel
-    
-    # x_train 的形状是 (N, H, W)
-    params = params.reshape(N_actual, x_train.shape[1], x_train.shape[2])
-    
-    # 计算 MAPE 
     mape = 0
+    for i in range(num_image):
+        # 提取单张图片的参数段
+        img_params = params_segment[i*num_pixel : (i+1)*num_pixel]
+        
+        # 【关键改进】动态 Min-Max 归一化
+        # 因为相关性攻击不保证数值大小，只保证线性一致
+        p_min, p_max = img_params.min(), img_params.max()
+        if p_max > p_min:
+            # 映射到 [0, 1]
+            img_recovered = (img_params - p_min) / (p_max - p_min)
+        else:
+            img_recovered = np.zeros_like(img_params)
+            
+        img_recovered = img_recovered.reshape(h, w)
+        
+        # 获取原始图像并归一化到 [0, 1]
+        original_img = x_train[i].astype(np.float32) / 255.0
+        
+        # 计算正向和反向误差 (因为相关性可能是负相关 r=-1)
+        err1 = np.mean(np.abs(img_recovered - original_img))
+        err2 = np.mean(np.abs((1.0 - img_recovered) - original_img))
+        
+        mape += min(err1, err2)
     
-    # 确保只循环实际恢复的图片数量
-    for i in range(N_actual): 
-        img_i = params[i]
-        
-        # 原始数据 x_train[i] 的值范围是 [0, 255]，但需要处理 scale_factor 的影响
-        # 如果原始图片在 prepare_cvea_stolen_data 中被除以了 scale_factor (例如 300.0)，
-        # 那么 x_train[i] 应该被视为 [0, 255] 范围。
-        
-        # 为了与原始图片比较，我们假设 x_train[i] 是 [0, 255]，并需要将其标准化，
-        # 或者假设攻击向量 params 已经通过 normalize 和 *255 恢复到了 [0, 255]。
-        
-        # 确保原始图片 x_train[i] 是浮点数并进行缩放 (还原到攻击前的原始范围)
-        original_img_scaled = x_train[i].astype(np.float32) / scale_factor
-        
-        # 计算权重恢复图像与训练图像之间的误差 err1
-        # img_i 此时是 [0, 255] 的 uint8 数组，需要转换为 float32 for cal_error
-        err1 = cal_error(img_i.astype(np.float32), original_img_scaled)
-        
-        # 计算权重恢复图像的反色图像与训练图像之间的误差 err2
-        # 需要确保 ImageOps, Image, np.asarray 能够正确处理 img_i
-        img_inverted = np.asarray(ImageOps.invert(Image.fromarray(img_i)))
-        err2 = cal_error(img_inverted.astype(np.float32), original_img_scaled)
-        
-        mape += min([err1, err2])
-    
-    # 确保除以实际恢复的图片数量
-    return mape / N_actual
+    return mape / num_image
 
 
 # 恢复窃取到的数据
@@ -440,8 +426,10 @@ def recover_cor_stolen_data(model, x_train):
     # 拼接成一个大的向量 (NumPy)
     params = np.concatenate(params, axis=0)
     
-    # 归一化处理 [0, 1]
-    params = normalize(params)
+    # 【修复】不再使用normalize，直接使用参数原始值
+    # 窃取数据在 [-0.5, 0.5] 范围，需要映射到 [0, 255]
+    params = (params + 0.5)  # [-0.5, 0.5] -> [0, 1]
+    params = np.clip(params, 0, 1)  # 确保在 [0, 1] 范围内
     
     # 重新组织成图片的格式
     if x_train.ndim == 4 and x_train.shape[-1] == 1:
@@ -457,59 +445,37 @@ def recover_cor_stolen_data(model, x_train):
     params = params.reshape(number, x_train.shape[1], x_train.shape[2])
     
     # 重映射到 [0, 255]
-    params = (params * 255 * scale_factor).astype(np.uint8)
+    params = (params * 255).astype(np.uint8)
     
     return params
 
 
 def recover_cor_stolen_data_new(model, x_train):
-    
-    # 提取所有参数（包括偏置项和 BN 参数）并展平拼接
+    # 保持参数提取逻辑一致
     params_list = []
+    for param in model.parameters():
+        params_list.append(param.detach().cpu().numpy().flatten())
     
-    # 遍历所有命名参数
-    for name, param in model.named_parameters():
+    params = np.concatenate(params_list)
+    
+    num_image = 10
+    h, w = x_train.shape[1], x_train.shape[2]
+    num_pixel = h * w
+    
+    recovered_images = []
+    
+    for i in range(num_image):
+        img_params = params[i*num_pixel : (i+1)*num_pixel]
         
-        # 展平并添加到列表
-        params_list.append(param.detach().cpu().numpy().reshape(-1))
+        # 动态归一化
+        p_min, p_max = img_params.min(), img_params.max()
+        if p_max > p_min:
+            img_norm = (img_params - p_min) / (p_max - p_min)
+        else:
+            img_norm = np.zeros_like(img_params)
             
-    if not params_list:
-        print("Model has no parameters to recover.")
-        return np.array([])
+        # 转换为 [0, 255] uint8 用于绘图
+        img_uint8 = (img_norm * 255).astype(np.uint8)
+        recovered_images.append(img_uint8.reshape(h, w))
         
-    # 拼接成一个大的向量 (NumPy)
-    all_params_flat = np.concatenate(params_list, axis=0).reshape(-1, 1)
-    
-    # 确定恢复图片的数量和尺寸 (基于 x_train)
-    if x_train.ndim == 4 and x_train.shape[-1] == 1:
-        x_train = x_train.squeeze(-1)
-        
-    pix_per_image = np.prod(x_train.shape[1:]) # H * W = 576
-    NUM_TARGET_IMAGES = x_train.shape[0]       # N = 100
-    
-    # 需要的参数总数 (57600)
-    target_params_len = NUM_TARGET_IMAGES * pix_per_image
-    
-    print(f"Target recovery size: {target_params_len}")
-    print(f"Total available model parameters (all parameters): {all_params_flat.shape[0]}")
-    
-    # 截取目标长度的参数
-    if all_params_flat.shape[0] < target_params_len:
-        print(f"[Recovery Warning] Total available parameters ({all_params_flat.shape[0]}) less than target recovery size ({target_params_len}).")
-        # 如果参数不够只能恢复能恢复的部分
-        params = all_params_flat[0 : (all_params_flat.shape[0] // pix_per_image) * pix_per_image]
-    else:
-        # 截取前 target_params_len 个参数
-        params = all_params_flat[0 : target_params_len] 
-
-    # 归一化处理 [0, 1] 
-    params = normalize(params)
-    
-    # 重新组织成图片的格式 (N, H, W)
-    N_actual = params.shape[0] // pix_per_image 
-    params = params.reshape(N_actual, x_train.shape[1], x_train.shape[2])
-    
-    # 重映射到 [0, 255]
-    params = (params * 255 * scale_factor).astype(np.uint8) # 假设 scale_factor 存在
-    
-    return params
+    return np.array(recovered_images)

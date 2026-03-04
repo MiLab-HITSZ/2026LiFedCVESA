@@ -3,7 +3,7 @@ python src/federated_main.py \
     --dataset=cifar \
     --gpu=0 \
     --iid=1 \
-    --epochs=500 \
+    --epochs=220 \
     --lr=0.15 \
     --local_bs=50 \
     --local_ep=5 \

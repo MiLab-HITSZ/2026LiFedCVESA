@@ -83,9 +83,12 @@ class LocalUpdate(object):
 
                 loss_ce = self.criterion(log_probs, labels)
                 loss_attack = torch.tensor(0.0, device=self.device)
+                cor_value = 0.0  # 用于显示
+                
                 if gama > 0 and self.stolen_data_dm is not None:
                     # cor_attack 返回 |r| (需要最大化)
                     cor_loss = cor_attack(model, self.stolen_data_dm)
+                    cor_value = cor_loss.item()
                     # 攻击损失 = -gama * |r|
                     loss_attack = -gama * cor_loss
             
@@ -110,7 +113,7 @@ class LocalUpdate(object):
             epoch_loss.append(avg_epoch_loss)
 
             local_epochs.set_description(
-                f'Client (Global R. {global_round}) | loss_attack: {loss_attack:.4f} | Loss: {avg_epoch_loss:.4f}'
+                f'Client (Global R. {global_round}) | Cor: {cor_value:.4f} | Attack: {loss_attack.item():.4f} | Loss: {avg_epoch_loss:.4f}'
             )
 
             # local_epochs.close()

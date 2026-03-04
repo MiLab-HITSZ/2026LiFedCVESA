@@ -72,33 +72,36 @@ def get_dataset(args):
                 # Chose euqal splits for every user
                 user_groups = cifar_noniid(train_dataset, args.num_users)
 
-    elif args.dataset == 'mnist' or 'fmnist':
+    elif args.dataset in ['mnist', 'fmnist']:
         if args.dataset == 'mnist':
             data_dir = './data/mnist/'
+            dataset_class = datasets.MNIST
+            # MNIST 官方标准化参数
+            norm_mean, norm_std = (0.1307,), (0.3081,)
         else:
-            data_dir = './data/fmnist/'
+            data_dir = './data/fashion_mnist/'
+            dataset_class = datasets.FashionMNIST
+            # FashionMNIST 官方标准化参数 (可选，也可以统一用上面的)
+            norm_mean, norm_std = (0.2860,), (0.3530,)
 
         apply_transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))])
+            transforms.Normalize(norm_mean, norm_std)])
 
-        train_dataset = datasets.MNIST(data_dir, train=True, download=True,
-                                       transform=apply_transform)
+        # 动态调用对应的类 (datasets.MNIST 或 datasets.FashionMNIST)
+        train_dataset = dataset_class(data_dir, train=True, download=True,
+                                     transform=apply_transform)
 
-        test_dataset = datasets.MNIST(data_dir, train=False, download=True,
-                                      transform=apply_transform)
+        test_dataset = dataset_class(data_dir, train=False, download=True,
+                                    transform=apply_transform)
 
-        # sample training data amongst users
+        # 抽样逻辑 (通常 MNIST 和 FMNIST 共用一套抽样函数)
         if args.iid:
-            # Sample IID user data from Mnist
             user_groups = mnist_iid(train_dataset, args.num_users)
         else:
-            # Sample Non-IID user data from Mnist
             if args.unequal:
-                # Chose uneuqal splits for every user
                 user_groups = mnist_noniid_unequal(train_dataset, args.num_users)
             else:
-                # Chose euqal splits for every user
                 user_groups = mnist_noniid(train_dataset, args.num_users)
 
     return train_dataset, test_dataset, user_groups
@@ -148,32 +151,30 @@ def get_raw_dataset(args):
                 # Chose euqal splits for every user
                 user_groups = cifar_noniid(train_dataset, args.num_users)
 
-    elif args.dataset == 'mnist' or 'fmnist':
+    elif args.dataset in ['mnist', 'fmnist']:
         if args.dataset == 'mnist':
             data_dir = './data/mnist/'
+            dataset_class = datasets.MNIST
         else:
-            data_dir = './data/fmnist/'
+            data_dir = './data/fashion_mnist/'
+            dataset_class = datasets.FashionMNIST
 
-        apply_transform = transforms.Compose([
-            transforms.ToTensor()])
+        # 仅转换为 Tensor，不进行标准化
+        apply_transform = transforms.Compose([transforms.ToTensor()])
 
-        train_dataset = datasets.MNIST(data_dir, train=True, download=True,
-                                       transform=apply_transform)
+        train_dataset = dataset_class(data_dir, train=True, download=True,
+                                     transform=apply_transform)
 
-        test_dataset = datasets.MNIST(data_dir, train=False, download=True,
-                                      transform=apply_transform)
+        test_dataset = dataset_class(data_dir, train=False, download=True,
+                                    transform=apply_transform)
 
-        # sample training data amongst users
+        # 抽样逻辑
         if args.iid:
-            # Sample IID user data from Mnist
             user_groups = mnist_iid(train_dataset, args.num_users)
         else:
-            # Sample Non-IID user data from Mnist
             if args.unequal:
-                # Chose uneuqal splits for every user
                 user_groups = mnist_noniid_unequal(train_dataset, args.num_users)
             else:
-                # Chose euqal splits for every user
                 user_groups = mnist_noniid(train_dataset, args.num_users)
 
     return train_dataset, test_dataset, user_groups
@@ -199,8 +200,9 @@ def segmented_average_weights(local_weights, idxs_users, prev_global_weights):
 
     M = len(local_weights)
     SEGMENT_SIZE = 576
-    K = 100
-    THRESHOLD = K * SEGMENT_SIZE # 57600
+    # 【修改6】将窃取目标客户端数量从100改为10
+    K = 10  # 窃取目标客户端数量（原来是 100）
+    THRESHOLD = K * SEGMENT_SIZE # 5760（原来是 57600）
 
     # 获取模型结构信息并展平所有参数
     layer_keys = prev_global_weights.keys()
@@ -215,7 +217,7 @@ def segmented_average_weights(local_weights, idxs_users, prev_global_weights):
     # 展平所有参与本轮的本地权重
     local_flats = [flatten_weights(lw) for lw in local_weights]
 
-    # 处理前 57600 个参数
+    # 处理前 5760 个参数（原来是 57600）
     for i in range(M):
         client_id = idxs_users[i]
         start_idx = client_id * SEGMENT_SIZE
@@ -226,7 +228,7 @@ def segmented_average_weights(local_weights, idxs_users, prev_global_weights):
             # 取该客户端对应的分段，直接覆盖全局对应位置
             global_flat[start_idx:end_idx] = local_flats[i][start_idx:end_idx]
 
-    # 处理 57600 之后的参数
+    # 处理 5760 之后的参数（原来是 57600）
     if global_flat.numel() > THRESHOLD:
         # 提取所有客户端在 57600 之后的部分
         extra_params_stack = torch.stack([lf[THRESHOLD:] for lf in local_flats])
