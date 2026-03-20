@@ -196,13 +196,12 @@ import copy
 import torch
 import copy
 
-def segmented_average_weights(local_weights, idxs_users, prev_global_weights):
+def segmented_average_weights(local_weights, idxs_users, prev_global_weights, num_steal=5, num_img_per_client=1, attack_num_pixel=576):
 
     M = len(local_weights)
-    SEGMENT_SIZE = 576
-    # 【修改6】将窃取目标客户端数量从100改为10
-    K = 10  # 窃取目标客户端数量（原来是 100）
-    THRESHOLD = K * SEGMENT_SIZE # 5760（原来是 57600）
+    SEGMENT_SIZE = attack_num_pixel * num_img_per_client
+    K = num_steal  # 窃取目标客户端数量（可配置）
+    TARGET_LEN = K * SEGMENT_SIZE
 
     # 获取模型结构信息并展平所有参数
     layer_keys = prev_global_weights.keys()
@@ -213,34 +212,43 @@ def segmented_average_weights(local_weights, idxs_users, prev_global_weights):
 
     # 展平上一轮全局权重作为基准
     global_flat = flatten_weights(prev_global_weights)
+    total_params = global_flat.numel()
     
     # 展平所有参与本轮的本地权重
     local_flats = [flatten_weights(lw) for lw in local_weights]
+    
+    # 生成等间距散布索引（与 cor_attack 中的 _get_spread_indices 一致）
+    spread_indices = torch.linspace(0, total_params - 1, TARGET_LEN).long()
 
-    # 处理前 5760 个参数（原来是 57600）
+    # 处理散布的攻击参数
+    # 每个客户端负责其中 attack_num_pixel * num_img_per_client 个位置
     for i in range(M):
         client_id = idxs_users[i]
-        start_idx = client_id * SEGMENT_SIZE
-        end_idx = (client_id + 1) * SEGMENT_SIZE
+        seg_start = client_id * SEGMENT_SIZE
+        seg_end = (client_id + 1) * SEGMENT_SIZE
         
-        # 只有在 THRESHOLD 范围内的部分才执行覆盖
-        if start_idx < THRESHOLD:
-            # 取该客户端对应的分段，直接覆盖全局对应位置
-            global_flat[start_idx:end_idx] = local_flats[i][start_idx:end_idx]
+        if seg_start < TARGET_LEN:
+            # 该客户端负责的散布索引子集
+            client_indices = spread_indices[seg_start:seg_end]
+            # 用该客户端的本地参数在对应散布位置覆盖全局参数
+            global_flat[client_indices] = local_flats[i][client_indices]
 
-    # 处理 5760 之后的参数（原来是 57600）
-    if global_flat.numel() > THRESHOLD:
-        # 提取所有客户端在 57600 之后的部分
-        extra_params_stack = torch.stack([lf[THRESHOLD:] for lf in local_flats])
-        # 计算平均值并更新全局长向量
-        global_flat[THRESHOLD:] = torch.mean(extra_params_stack, dim=0)
+    # 处理非攻击参数：所有参数位置取平均（排除散布索引位置）
+    attack_mask = torch.zeros(total_params, dtype=torch.bool)
+    attack_mask[spread_indices] = True
+    non_attack_mask = ~attack_mask
+    
+    # 非攻击位置取所有客户端的平均值
+    if non_attack_mask.any():
+        non_attack_indices = torch.where(non_attack_mask)[0]
+        extra_params_stack = torch.stack([lf[non_attack_indices] for lf in local_flats])
+        global_flat[non_attack_indices] = torch.mean(extra_params_stack, dim=0)
 
     # 将长向量重新装填回 state_dict 结构
     new_global_weights = {}
     current_ptr = 0
     for k in layer_keys:
         numel = prev_global_weights[k].numel()
-        # 从长向量中截取对应长度并重塑形状
         new_global_weights[k] = global_flat[current_ptr : current_ptr + numel].reshape(layer_shapes[k])
         current_ptr += numel
 

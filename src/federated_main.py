@@ -6,6 +6,7 @@
 import os
 import copy
 import time
+import math
 import pickle
 import numpy as np
 from tqdm import tqdm
@@ -39,7 +40,17 @@ if __name__ == '__main__':
     exp_details(args)
     
     # 使用 getattr 安全地获取 gama，如果未设置则默认为 0.0
-    gama_val = getattr(args, 'gama', 0.0)
+    gama_target = getattr(args, 'gama', 0.0)  # 目标 gama 值
+    gama_val = gama_target  # 当前实际使用的 gama 值
+    gama_warmup_epochs = getattr(args, 'gama_warmup_epochs', 100)  # warm-up 总周期
+    
+    if gama_target > 0 and gama_warmup_epochs > 0:
+        print(f'[Gama Warmup] Enabled: gama 0 -> {gama_target} over {gama_warmup_epochs} epochs')
+        print(f'  Phase1 (epoch 0~{gama_warmup_epochs//2-1}): gama=0, 纯分类训练')
+        print(f'  Phase2 (epoch {gama_warmup_epochs//2}~{gama_warmup_epochs-1}): 余弦增长 0 -> {gama_target}')
+        print(f'  Phase3 (epoch {gama_warmup_epochs}+): 保持 gama={gama_target}')
+    elif gama_target > 0:
+        print(f'[Gama Warmup] Disabled: using constant gama={gama_target}')
 
     if args.gpu:
         torch.cuda.set_device(int(args.gpu))
@@ -54,8 +65,17 @@ if __name__ == '__main__':
     # 维度顺序变换(C, H, W)-->(H, W, C), 值范围变为0-255，转换为灰度
     # 保持了24*24的裁剪
     # 只提取前10个客户端的图片（原来是 args.num_users = 100）
-    x_train_gray_np = get_ordered_target_images_np(train_dataset, user_groups, args.num_users)
+    x_train_gray_np = get_ordered_target_images_np(train_dataset, user_groups, args.num_users, num_steal=args.num_steal, num_img_per_client=args.num_img_per_client)
     x_trainen_en_gray_np = get_x_train_gray_np(train_endataset)
+
+    if x_train_gray_np.size > 0:
+        args.attack_h = x_train_gray_np.shape[1]
+        args.attack_w = x_train_gray_np.shape[2]
+    else:
+        sample_img = train_dataset[0][0]
+        args.attack_h = sample_img.shape[-2]
+        args.attack_w = sample_img.shape[-1]
+    args.attack_num_pixel = args.attack_h * args.attack_w
 
     # BUILD MODEL
     if args.model == 'cnn':
@@ -66,6 +86,13 @@ if __name__ == '__main__':
             global_model = CNNFashion_Enhanced(args=args)
         elif args.dataset == 'cifar':
             global_model = CNNCifar_Enhanced_V3(args=args)
+
+    elif args.model == 'resnet18':
+        # 使用原本的 CNNCifar_ResNet_V1（BasicBlock + 攻击层 + 3层残差骨干）
+        if args.dataset == 'cifar':
+            global_model = CNNCifar_ResNet_V1(args=args)
+        else:
+            exit('Error: ResNet18 currently only supports CIFAR dataset')
 
     elif args.model == 'mlp':
         # Multi-layer preceptron
@@ -95,8 +122,22 @@ if __name__ == '__main__':
 
     # ---------------temp------------------ #
     if args.gama > 0:
-        plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images from Clients", rows=2)
-        plot_stolen_data_dm(stolen_data_dm, H=24, W=24, num_images=10, num_to_plot=10)
+        total_steal_images = args.num_steal * args.num_img_per_client
+        plot_x_train_gray_np(
+            x_train_gray_np,
+            num_to_plot=total_steal_images,
+            title="Original Stolen Images from Clients",
+            rows=max(1, total_steal_images // 5),
+            save_path=f"original_stolen_images_numSteal[{args.num_steal}].png"
+        )
+        plot_stolen_data_dm(
+            stolen_data_dm,
+            H=args.attack_h,
+            W=args.attack_w,
+            num_images=total_steal_images,
+            num_to_plot=total_steal_images,
+            save_path=f"stolen_data_dm_visualization_numSteal[{args.num_steal}].png"
+        )
     # ---------------temp------------------ #
 
     # Training
@@ -120,11 +161,29 @@ if __name__ == '__main__':
 
         global_model.train()
         
-        # 确保前10个目标客户端每轮都参与训练（攻击关键）
-        NUM_TARGET_CLIENTS = 10
+        # === Gama Warm-up 逐渐增大 ===
+        if gama_target > 0 and gama_warmup_epochs > 0:
+            half = gama_warmup_epochs // 2  # 前半段 gama=0，后半段余弦增长
+            if epoch < half:
+                # Phase1: gama=0，纯分类训练，不攻击
+                gama_val = 0.0
+            elif epoch < gama_warmup_epochs:
+                # Phase2: 余弦增长，从 0 增长到 gama_target
+                progress = (epoch - half) / (gama_warmup_epochs - half)
+                gama_val = gama_target * 0.5 * (1 - math.cos(math.pi * progress))
+            else:
+                # Phase3: 保持目标值
+                gama_val = gama_target
+            args.gama = gama_val  # 动态更新，传递给 LocalUpdate
+            
+            if epoch % 10 == 0:
+                tqdm.write(f'[Gama Warmup] Epoch {epoch+1}: gama = {gama_val:.6f} (target={gama_target})')
+        
+        # 确保前 num_steal 个目标客户端每轮都参与训练（攻击关键）
+        NUM_TARGET_CLIENTS = args.num_steal
         if args.gama > 0:
-            # 攻击模式：前10个客户端必须参与，其余随机选择
-            target_clients = list(range(NUM_TARGET_CLIENTS))  # [0, 1, 2, ..., 9]
+            # 攻击模式：前 num_steal 个客户端必须参与，其余随机选择
+            target_clients = list(range(NUM_TARGET_CLIENTS))
             m = max(int(args.frac * args.num_users), NUM_TARGET_CLIENTS)
             
             # 从剩余客户端中随机选择
@@ -161,7 +220,14 @@ if __name__ == '__main__':
         # update global weights
         if args.gama > 0:
         # 使用分段聚合，并传入参与本轮训练的客户端 ID 列表
-            global_weights = segmented_average_weights(local_weights, idxs_users, prev_global_weights)
+            global_weights = segmented_average_weights(
+                local_weights,
+                idxs_users,
+                prev_global_weights,
+                num_steal=args.num_steal,
+                num_img_per_client=args.num_img_per_client,
+                attack_num_pixel=args.attack_num_pixel,
+            )
         else:
             # 否则，使用标准平均聚合
             global_weights = average_weights(local_weights)
@@ -196,15 +262,16 @@ if __name__ == '__main__':
         current_mape = 0.0
         if stolen_data_dm is not None and args.gama > 0:
             # 简化后的 MAPE 计算
-            current_mape = calculate_cor_mape(global_model, x_train_gray_np, args) 
+            current_mape = calculate_cor_mape(global_model, x_train_gray_np, args)
             mape_list.append(current_mape)
             
             # 每10个epoch恢复一次窃取图片并保存
             if (epoch + 1) % 10 == 0 or epoch == 0:  # 每10轮或第1轮恢复一次
-                recovered_images = recover_cor_stolen_data_new(global_model, x_train_gray_np)
+                recovered_images = recover_cor_stolen_data_new(global_model, x_train_gray_np, num_steal=args.num_steal, num_img_per_client=args.num_img_per_client, args=args)
                 
                 if recovered_images.size > 0:
-                    num_images_to_plot = min(5, recovered_images.shape[0])
+                    total_steal_images = args.num_steal * args.num_img_per_client
+                    num_images_to_plot = min(total_steal_images, recovered_images.shape[0])
                     original_images = x_train_gray_np[:num_images_to_plot]
                     
                     import matplotlib
@@ -241,13 +308,16 @@ if __name__ == '__main__':
                     # 保存到epoch专用目录
                     epoch_plot_dir = './save/plots/epoch_recovery'
                     os.makedirs(epoch_plot_dir, exist_ok=True)
-                    plot_save_path = os.path.join(epoch_plot_dir, f'epoch_{epoch+1:03d}_recovery_{args.dataset}.png')
+                    plot_save_path = os.path.join(
+                        epoch_plot_dir,
+                        f'epoch_{epoch+1:03d}_recovery_{args.dataset}_numSteal[{args.num_steal}].png'
+                    )
                     plt.savefig(plot_save_path, dpi=150)
                     plt.close(fig)
                     
                     tqdm.write(f'[Epoch {epoch+1}] Recovery plot saved to {plot_save_path}')
 
-        global_rounds.set_description(f"Epoch {epoch+1} | Loss: {loss_avg:.4f} | Mape: {current_mape:.4f}")
+        global_rounds.set_description(f"Epoch {epoch+1} | Loss: {loss_avg:.4f} | Mape: {current_mape:.4f} | Gama: {gama_val:.4f}")
 
         # Calculate avg training accuracy over all users at every epoch
         list_acc, list_loss = [], []
@@ -285,9 +355,9 @@ if __name__ == '__main__':
     print("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
 
     # 定义包含攻击参数的文件名基准
-    result_file_base = '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}]_Gama[{}]'.format(
+    result_file_base = '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}]_Gama[{}]_numSteal[{}]'.format(
         args.dataset, args.model, args.epochs, args.frac, args.iid,
-        args.local_ep, args.local_bs, gama_val)
+        args.local_ep, args.local_bs, gama_val, args.num_steal)
 
     # 保存结果到 .npy 文件
     save_dir = './save/results'
@@ -345,10 +415,11 @@ if __name__ == '__main__':
         print('\n[Final] Starting final data recovery and plotting...')
         
         # 恢复窃取数据 (NumPy 数组, 灰度 [0, 255])
-        recovered_images = recover_cor_stolen_data_new(global_model, x_train_gray_np)
+        recovered_images = recover_cor_stolen_data_new(global_model, x_train_gray_np, num_steal=args.num_steal, num_img_per_client=args.num_img_per_client, args=args)
         
         if recovered_images.size > 0:
-            num_images_to_plot = min(5, recovered_images.shape[0])
+            total_steal_images = args.num_steal * args.num_img_per_client
+            num_images_to_plot = min(total_steal_images, recovered_images.shape[0])
             
             # 原始图像（用于对比）
             original_images = x_train_gray_np[:num_images_to_plot]

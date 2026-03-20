@@ -355,6 +355,80 @@ class CNNCifar_Enhanced_V3(nn.Module):
         x = self.fc(x)
         return F.log_softmax(x, dim=1)
 
+class BasicBlock(nn.Module):
+    """标准残差块，用于增加深度和参数量"""
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.GroupNorm(8, planes) # 联邦学习中推荐使用 GroupNorm 代替 BatchNorm
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.GroupNorm(8, planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.GroupNorm(8, self.expansion * planes)
+            )
+
+    def forward(self, x):
+        out = F.silu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.silu(out)
+        return out
+
+class CNNCifar_ResNet_V1(nn.Module):
+    def __init__(self, args):
+        super(CNNCifar_ResNet_V1, self).__init__()
+        
+        # --- 1. 攻击层 (严格保留原始结构，确保 CVEA 梯度泄露逻辑一致) ---
+        # 这里的 80 通道提供了足够的梯度信息维度
+        self.conv1 = nn.Conv2d(3, 80, kernel_size=5, padding=2, bias=False)
+        self.gn1 = nn.GroupNorm(8, 80)
+        self.act1 = nn.SiLU()
+        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2) # 32x32 -> 16x16
+
+        # --- 2. 扩展骨干层 (模仿 ResNet 架构大幅度增加参数) ---
+        # 增加通道数：80 -> 160 -> 320 -> 640
+        self.layer1 = self._make_layer(BasicBlock, 80, 160, num_blocks=3, stride=2)  # 16x16 -> 8x8
+        self.layer2 = self._make_layer(BasicBlock, 160, 320, num_blocks=4, stride=2) # 8x8 -> 4x4
+        self.layer3 = self._make_layer(BasicBlock, 320, 640, num_blocks=3, stride=2) # 4x4 -> 2x2
+        
+        # --- 3. 高性能全连接头 ---
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Sequential(
+            nn.Linear(640, 512),
+            nn.SiLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, args.num_classes)
+        )
+
+    def _make_layer(self, block, in_planes, planes, num_blocks, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+        for s in strides:
+            layers.append(block(in_planes, planes, s))
+            in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        # 初始攻击特征提取
+        x = self.pool1(self.act1(self.gn1(self.conv1(x))))
+        
+        # 深度残差特征提取
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        
+        # 分类
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)
+
 class modelC(nn.Module):
     def __init__(self, input_size, n_classes=10, **kwargs):
         super(AllConvNet, self).__init__()
@@ -388,3 +462,73 @@ class modelC(nn.Module):
         pool_out.squeeze_(-1)
         pool_out.squeeze_(-1)
         return pool_out
+
+
+# ==================== ResNet18 for CIFAR (24x24) ====================
+
+class ResNet18Cifar(nn.Module):
+    """
+    标准 ResNet18 适配 CIFAR 小图 (24x24 或 32x32)
+    - 复用已有的 BasicBlock（2 层 3x3 conv，GroupNorm + SiLU）
+    - 第一层使用 3x3 卷积（而非 ImageNet 的 7x7），不进行初始 MaxPool
+    - 层配置: [2, 2, 2, 2]（标准 ResNet18）
+    - 通道: 64 → 128 → 256 → 512（~11.2M 参数）
+    """
+    def __init__(self, args, num_blocks=[2, 2, 2, 2]):
+        super(ResNet18Cifar, self).__init__()
+        self.in_planes = 64
+
+        # --- 初始卷积层 (适配小图，不做过度降采样) ---
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.gn1 = nn.GroupNorm(8, 64)
+        self.act1 = nn.SiLU()
+        # 注意：不使用 MaxPool，保留空间分辨率（24x24 -> 24x24）
+
+        # --- 4 个残差阶段 (复用 BasicBlock) ---
+        self.layer1 = self._make_layer(64,  num_blocks[0], stride=1)  # 24x24 -> 24x24, 通道 64
+        self.layer2 = self._make_layer(128, num_blocks[1], stride=2)  # 24x24 -> 12x12, 通道 128
+        self.layer3 = self._make_layer(256, num_blocks[2], stride=2)  # 12x12 -> 6x6,   通道 256
+        self.layer4 = self._make_layer(512, num_blocks[3], stride=2)  # 6x6   -> 3x3,   通道 512
+
+        # --- 分类头 ---
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512, args.num_classes)
+
+        # 权重初始化
+        self._initialize_weights()
+
+    def _make_layer(self, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s))
+            self.in_planes = planes * BasicBlock.expansion
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self):
+        """Kaiming 初始化，加速收敛"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.GroupNorm):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        # 初始卷积
+        x = self.act1(self.gn1(self.conv1(x)))
+
+        # 4 个残差阶段
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        # 全局平均池化 + 分类
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)

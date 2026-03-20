@@ -4,9 +4,20 @@ import numpy as np
 from PIL import Image, ImageOps
 from torch.utils.data import DataLoader, Dataset
 
-# 移除scale_factor，不再对窃取数据进行额外缩放
-# 让窃取数据保持在[-0.5, 0.5]范围，与模型参数尺度匹配
-# scale_factor = 1000.0  # 原来除以1000导致数据尺度太小
+# 缩放因子：1.0 表示不缩放，d_m 保持原始 [-0.5, 0.5] 范围
+scale_factor = 1.0
+
+
+def get_attack_image_shape(args, x_train=None):
+    if x_train is not None and getattr(x_train, "size", 0) > 0:
+        return x_train.shape[1], x_train.shape[2]
+
+    attack_h = getattr(args, 'attack_h', None)
+    attack_w = getattr(args, 'attack_w', None)
+    if attack_h is not None and attack_w is not None:
+        return attack_h, attack_w
+
+    raise ValueError("Attack image shape is not initialized.")
 
 def rbg_to_grayscale_pt(images: torch.Tensor) -> torch.Tensor:
     # 灰度转换系数 
@@ -90,17 +101,17 @@ def get_x_train_gray_np(dataset_train):
 
 # 假设这个函数在 attack_utils.py 或 utils.py 中
 
-def get_ordered_target_images_np(dataset, user_groups, num_users):
+def get_ordered_target_images_np(dataset, user_groups, num_users, num_steal=5, num_img_per_client=1):
 
     target_indices = []
     
-    # 提取前10个客户端的第一张图片的索引（原来是 num_users = 100）
-    NUM_TARGET_CLIENTS = 10  # 窃取目标客户端数量
-    for i in range(NUM_TARGET_CLIENTS):
+    # 提取前 num_steal 个客户端的前 num_img_per_client 张图片的索引
+    for i in range(num_steal):
         try:
-            # 获取客户端 i 的第一个数据索引
-            first_image_index = list(user_groups[i])[0]
-            target_indices.append(first_image_index)
+            # 获取客户端 i 的数据索引列表
+            client_indices = list(user_groups[i])
+            for j in range(min(num_img_per_client, len(client_indices))):
+                target_indices.append(client_indices[j])
         except IndexError:
             # 如果某个客户端没有数据，跳过
             continue
@@ -216,11 +227,14 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
         print("[CVEA Attack] Attack disabled (gama=0).")
         return None
 
-    print(f"\n[CVEA Attack] Preparing stolen data with gama={args.gama}")
+    num_steal = getattr(args, 'num_steal', 5)
+    num_img_per_client = getattr(args, 'num_img_per_client', 1)
+    attack_h, attack_w = get_attack_image_shape(args)
+    num_pixel = attack_h * attack_w
+    print(f"\n[CVEA Attack] Preparing stolen data with gama={args.gama}, num_steal={num_steal}, num_img_per_client={num_img_per_client}")
 
-    # 获取目标权重总数：从100个客户端改为10个客户端
-    NUM_TARGET_CLIENTS = 10  # 窃取目标客户端数量（原来是 args.num_users = 100）
-    num_target_params = NUM_TARGET_CLIENTS * 576  # 每个客户端对应一张 24x24 的图片，共10张
+    # 获取目标权重总数：窃取前 num_steal 个客户端的数据，每个客户端 num_img_per_client 张图片
+    num_target_params = num_steal * num_img_per_client * num_pixel
     # 获取模型全部参数数量
     # for name, param in net_glob.named_parameters():
     #     num_target_params += param.numel()
@@ -229,6 +243,7 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
         print('Error: Model has no suitable parameters for CVEA attack.')
         return None
 
+    print(f"[CVEA Attack] Attack image shape: {attack_h}x{attack_w}")
     print(f"[CVEA Attack] Target parameter count: {num_target_params}")
 
     # 按客户端顺序构建索引列表：只窃取前10个客户端的数据
@@ -237,14 +252,13 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
     # 创建一个空的索引列表，用于存储目标图片的索引
     target_indices = []
     
-    # 遍历前10个客户端（原来是 args.num_users = 100）
-    for i in range(NUM_TARGET_CLIENTS):
+    # 遍历前 num_steal 个客户端，每个客户端取前 num_img_per_client 张图片
+    for i in range(num_steal):
         # user_groups[i] 是一个集合，包含客户端 i 的所有数据索引
         try:
-            # 找到客户端 i 拥有的第一个索引
-            # 在 IID/Non-IID 分组后，集合中的第一个元素是可重复访问的。
-            first_image_index = list(user_groups[i])[0]
-            target_indices.append(first_image_index)
+            client_indices = list(user_groups[i])
+            for j in range(min(num_img_per_client, len(client_indices))):
+                target_indices.append(client_indices[j])
         except IndexError:
             # 如果某个客户端没有数据，跳过或记录警告
             print(f"[CVEA Warning] Client {i} has no data. Skipping.")
@@ -300,51 +314,54 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
     d_mean = torch.mean(stolen_data_normalized)
     d_m_attack = stolen_data_normalized - d_mean
 
+    # 对 d_m 进行缩放，使其尺度与模型参数匹配
+    d_m_attack = d_m_attack * scale_factor
+    print(f"[CVEA Attack] Applied scale_factor={scale_factor}, d_m range: [{d_m_attack.min().item():.4f}, {d_m_attack.max().item():.4f}]")
+
     # 将 d_m 移到 args.device
     d_m_attack = d_m_attack.to(args.device)
     print(f"[CVEA Attack] Prepared d_m with length {d_m_attack.numel()}")
 
     return d_m_attack
 
+def _get_spread_indices(total_params, target_len):
+    """生成等间距散布的索引，将 target_len 个攻击点均匀分布到 total_params 个参数中"""
+    # 使用 linspace 生成等间距索引，确保首尾都被包含
+    indices = torch.linspace(0, total_params - 1, target_len).long()
+    return indices
+
 # 相关值编码攻击
 # 返回值是相关系数的绝对值，作为损失，值的范围是[0, 1]
+# 攻击参数数量取决于 num_steal，均匀散布到整个模型中
 def cor_attack(model, d_m):
-    # 只使用前5760个参数计算相关性，与分段聚合策略一致
     # 遍历模型的所有可训练参数并展平
     params = []
     
     for param in model.parameters():
-        # 现在提取所有参数（权重、偏置项等）
+        # 提取所有参数（权重、偏置项等）
         params.append(param.view(-1))
     
     # 如果模型没有可训练参数，则返回 0
     if not params:
-        # 确保返回的 Tensor 在正确的设备上
         return torch.tensor(0.0, device=d_m.device)
         
     # 拼接成一个大的向量 p_flat
     p_flat = torch.cat(params, dim=0)
     
-    # 只使用前 d_m.size(0) 个参数（即前5760个）
-    # 这样相关性计算只关注被攻击的参数段，不被其他参数稀释
-    target_len = d_m.size(0)  # 5760
-    if p_flat.size(0) < target_len:
-        # 如果模型参数不足，填充零
-        padding = torch.zeros(target_len - p_flat.size(0), device=p_flat.device, dtype=p_flat.dtype)
-        p_flat = torch.cat([p_flat, padding], dim=0)
+    target_len = d_m.size(0)  # num_steal * num_img_per_client * 576
+    total_params = p_flat.size(0)
     
-    # 只取前 target_len 个参数
-    p_flat = p_flat[:target_len]
-    d_m = d_m[:target_len]
+    # 生成等间距散布的索引
+    spread_indices = _get_spread_indices(total_params, target_len).to(p_flat.device)
     
-
+    # 按散布索引采样模型参数
+    p_sampled = p_flat[spread_indices]
+    
     # 计算中心化权重 p_m = params - mean(params)
-    # 确保在计算均值时使用浮点数
-    p_mean = torch.mean(p_flat.float())
-    p_m = p_flat - p_mean
+    p_mean = torch.mean(p_sampled.float())
+    p_m = p_sampled - p_mean
     
     # 计算相关性函数 (皮尔逊相关系数)
-    
     # r_num = sum(p_m * d_m) (协方差的分子)
     r_num = torch.sum(p_m * d_m)
     
@@ -352,13 +369,11 @@ def cor_attack(model, d_m):
     r_den = torch.sqrt(torch.sum(p_m ** 2) * torch.sum(d_m ** 2))
     
     # r (皮尔逊相关系数)
-    # 避免除以零
     epsilon = 1e-8 
     r = r_num / (r_den + epsilon)
     
     # loss = |r|
     loss = torch.abs(r)
-    # print(f"loss_cor value: {loss.item():.4f}")
     return loss
 
 
@@ -375,18 +390,25 @@ def calculate_cor_mape(model, x_train, args):
     params = np.concatenate(params_list)
     
     # 2. 确定目标参数段
-    num_image = 10 
-    h, w = x_train.shape[1], x_train.shape[2]
+    num_clients = getattr(args, 'num_steal', 5)
+    num_img_per_client = getattr(args, 'num_img_per_client', 1)
+    num_image = num_clients * num_img_per_client  # 总图片数
+    h, w = get_attack_image_shape(args, x_train)
     num_pixel = h * w
     target_len = num_image * num_pixel
     
-    # 截取参与编码的那部分参数
-    params_segment = params[:target_len]
+    # 按散布索引采样参数（与 cor_attack 一致）
+    total_params = len(params)
+    spread_indices = np.linspace(0, total_params - 1, target_len).astype(int)
+    params_segment = params[spread_indices]
     
     mape = 0
     for i in range(num_image):
         # 提取单张图片的参数段
         img_params = params_segment[i*num_pixel : (i+1)*num_pixel]
+        
+        # 先除以缩放因子，还原到 [-0.5, 0.5] 范围
+        img_params = img_params / scale_factor
         
         # 【关键改进】动态 Min-Max 归一化
         # 因为相关性攻击不保证数值大小，只保证线性一致
@@ -450,7 +472,7 @@ def recover_cor_stolen_data(model, x_train):
     return params
 
 
-def recover_cor_stolen_data_new(model, x_train):
+def recover_cor_stolen_data_new(model, x_train, num_steal=5, num_img_per_client=1, args=None):
     # 保持参数提取逻辑一致
     params_list = []
     for param in model.parameters():
@@ -458,14 +480,23 @@ def recover_cor_stolen_data_new(model, x_train):
     
     params = np.concatenate(params_list)
     
-    num_image = 10
-    h, w = x_train.shape[1], x_train.shape[2]
+    num_image = num_steal * num_img_per_client  # 总图片数
+    h, w = get_attack_image_shape(args, x_train)
     num_pixel = h * w
+    target_len = num_image * num_pixel
+    
+    # 按散布索引采样参数（与 cor_attack 一致）
+    total_params = len(params)
+    spread_indices = np.linspace(0, total_params - 1, target_len).astype(int)
+    params_sampled = params[spread_indices]
     
     recovered_images = []
     
     for i in range(num_image):
-        img_params = params[i*num_pixel : (i+1)*num_pixel]
+        img_params = params_sampled[i*num_pixel : (i+1)*num_pixel]
+        
+        # 先除以缩放因子，还原到 [-0.5, 0.5] 范围
+        img_params = img_params / scale_factor
         
         # 动态归一化
         p_min, p_max = img_params.min(), img_params.max()

@@ -66,6 +66,15 @@ def args_parser():
     parser.add_argument('--gama', type=float, default=0.1, 
                         help="The coefficient (gamma) for the CVEA attack regularization term. " \
                         "Set to 0.0 to disable attack.")
+    parser.add_argument('--gama_warmup_epochs', type=int, default=100,
+                        help="Number of epochs for gama to warm up from 0 to target value. "
+                        "Phase1: first half epochs linear warmup; Phase2: second half cosine ramp-up. "
+                        "Set to 0 to disable warmup (use constant gama).")
+    parser.add_argument('--num_steal', type=int, default=5,
+                        help="Number of target clients to steal from. Default is 5.")
+    parser.add_argument('--num_img_per_client', type=int, default=1,
+                        help="Number of images to steal per client. "
+                        "Each image is 24x24=576 pixels. Default is 1.")
 
 
     args = parser.parse_args()

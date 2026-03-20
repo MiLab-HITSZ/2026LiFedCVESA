@@ -2,7 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 
-def plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images (Client 0, 1, ...)", rows=2):
+
+def plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images (Client 0, 1, ...)", rows=2, save_path="original_stolen_images.png"):
     """
     绘制原始灰度图像数组 x_train_gray_np 的内容。
 
@@ -56,14 +57,15 @@ def plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen
         fig.delaxes(axes[j])
 
     plt.tight_layout(rect=[0, 0, 1, 1]) # 自动调整布局
-    plt.savefig("original_stolen_images.png")
+    plt.savefig(save_path)
 
 
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10, title="Visualizing Stolen Data Vector (d_m)"):
+
+def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10, title="Visualizing Stolen Data Vector (d_m)", save_path="stolen_data_dm_visualization.png"):
     """
     仅使用 stolen_data_dm 向量及其形状信息来重塑和绘制图片。
     
@@ -131,4 +133,4 @@ def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10,
         fig.delaxes(axes[j])
 
     plt.tight_layout(rect=[0, 0, 1, 1])
-    plt.savefig("stolen_data_dm_visualization.png")
+    plt.savefig(save_path)
