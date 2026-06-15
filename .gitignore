@@ -1,4 +1,54 @@
 .DS_Store
-data/cifar
-data/mnist
-data/fmnist
+
+# Python cache / local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Local/editor files
+.codex
+.env
+.env.*
+*.swp
+*.swo
+
+# Downloaded datasets
+data/cifar/*
+data/mnist/*
+data/fmnist/*
+data/fashion_mnist/*
+!data/README.md
+!data/cifar/.gitkeep
+!data/mnist/.gitkeep
+!data/fmnist/.gitkeep
+!data/fashion_mnist/.gitkeep
+
+# Experiment outputs
+save/results/
+save/plots/
+save/objects/
+!save/.gitkeep
+
+# Run logs and scheduler state
+scripts_10clients/logs*/
+scripts_10clients/**/logs*/
+*.log
+
+# Generated numerical/model artifacts
+*.npy
+*.npz
+*.pkl
+*.pt
+*.pth
+
+# Generated visualizations at repository root
+original_stolen_images*.png
+stolen_data_dm_visualization*.png
+*_accuracy_trend.png
+*_mape_trend.png

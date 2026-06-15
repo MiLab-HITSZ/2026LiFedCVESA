@@ -19,6 +19,21 @@ def get_attack_image_shape(args, x_train=None):
 
     raise ValueError("Attack image shape is not initialized.")
 
+
+def match_training_distribution(images_tensor: torch.Tensor, args) -> torch.Tensor:
+    dataset = getattr(args, 'dataset', None)
+
+    if dataset == 'mnist':
+        mean = torch.tensor([0.1307], dtype=images_tensor.dtype, device=images_tensor.device)
+        std = torch.tensor([0.3081], dtype=images_tensor.dtype, device=images_tensor.device)
+    elif dataset == 'fmnist':
+        mean = torch.tensor([0.2860], dtype=images_tensor.dtype, device=images_tensor.device)
+        std = torch.tensor([0.3530], dtype=images_tensor.dtype, device=images_tensor.device)
+    else:
+        return images_tensor
+
+    return (images_tensor - mean.view(1, 1, 1, -1)) / std.view(1, 1, 1, -1)
+
 def rbg_to_grayscale_pt(images: torch.Tensor) -> torch.Tensor:
     # 灰度转换系数 
     # 系数必须是 float32
@@ -288,6 +303,9 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
         if images_tensor.size(1) in [1, 3]:
             images_tensor = images_tensor.permute(0, 2, 3, 1)
 
+    # 让 MNIST/FashionMNIST 的攻击目标与训练输入分布一致，但仍保留原始图像来源
+    images_tensor = match_training_distribution(images_tensor, args)
+
     # 转换为灰度 (N, H, W)
     # MNIST (N, H, W, 1)
     if images_tensor.size(-1) == 1:
@@ -324,16 +342,23 @@ def prepare_cvea_stolen_data(net_glob, dataset_train, args, user_groups):
 
     return d_m_attack
 
-def _get_spread_indices(total_params, target_len):
-    """生成等间距散布的索引，将 target_len 个攻击点均匀分布到 total_params 个参数中"""
-    # 使用 linspace 生成等间距索引，确保首尾都被包含
-    indices = torch.linspace(0, total_params - 1, target_len).long()
-    return indices
+def get_attack_param_indices(total_params, target_len, mode='spread', device=None):
+    if target_len > total_params:
+        raise ValueError(
+            f"Attack target length ({target_len}) exceeds model parameter count ({total_params})."
+        )
+
+    if mode == 'front':
+        return torch.arange(target_len, device=device, dtype=torch.long)
+    if mode == 'spread':
+        return torch.linspace(0, total_params - 1, target_len, device=device).long()
+
+    raise ValueError(f"Unsupported attack_position_mode: {mode}")
 
 # 相关值编码攻击
 # 返回值是相关系数的绝对值，作为损失，值的范围是[0, 1]
-# 攻击参数数量取决于 num_steal，均匀散布到整个模型中
-def cor_attack(model, d_m):
+# 攻击参数数量取决于 num_steal，位置由 attack_position_mode 控制
+def cor_attack(model, d_m, args=None):
     # 遍历模型的所有可训练参数并展平
     params = []
     
@@ -351,11 +376,16 @@ def cor_attack(model, d_m):
     target_len = d_m.size(0)  # num_steal * num_img_per_client * 576
     total_params = p_flat.size(0)
     
-    # 生成等间距散布的索引
-    spread_indices = _get_spread_indices(total_params, target_len).to(p_flat.device)
+    attack_position_mode = getattr(args, 'attack_position_mode', 'spread')
+    attack_indices = get_attack_param_indices(
+        total_params,
+        target_len,
+        mode=attack_position_mode,
+        device=p_flat.device,
+    )
     
-    # 按散布索引采样模型参数
-    p_sampled = p_flat[spread_indices]
+    # 按攻击位置索引采样模型参数
+    p_sampled = p_flat[attack_indices]
     
     # 计算中心化权重 p_m = params - mean(params)
     p_mean = torch.mean(p_sampled.float())
@@ -397,10 +427,11 @@ def calculate_cor_mape(model, x_train, args):
     num_pixel = h * w
     target_len = num_image * num_pixel
     
-    # 按散布索引采样参数（与 cor_attack 一致）
+    # 按攻击位置索引采样参数（与 cor_attack 一致）
     total_params = len(params)
-    spread_indices = np.linspace(0, total_params - 1, target_len).astype(int)
-    params_segment = params[spread_indices]
+    attack_position_mode = getattr(args, 'attack_position_mode', 'spread')
+    attack_indices = get_attack_param_indices(total_params, target_len, mode=attack_position_mode)
+    params_segment = params[attack_indices.cpu().numpy()]
     
     mape = 0
     for i in range(num_image):
@@ -485,10 +516,11 @@ def recover_cor_stolen_data_new(model, x_train, num_steal=5, num_img_per_client=
     num_pixel = h * w
     target_len = num_image * num_pixel
     
-    # 按散布索引采样参数（与 cor_attack 一致）
+    # 按攻击位置索引采样参数（与 cor_attack 一致）
     total_params = len(params)
-    spread_indices = np.linspace(0, total_params - 1, target_len).astype(int)
-    params_sampled = params[spread_indices]
+    attack_position_mode = getattr(args, 'attack_position_mode', 'spread')
+    attack_indices = get_attack_param_indices(total_params, target_len, mode=attack_position_mode)
+    params_sampled = params[attack_indices.cpu().numpy()]
     
     recovered_images = []
     

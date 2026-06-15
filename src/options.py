@@ -23,6 +23,13 @@ def args_parser():
                         help='learning rate')
     parser.add_argument('--momentum', type=float, default=0.5,
                         help='SGD momentum (default: 0.5)')
+    parser.add_argument('--weight_decay', type=float, default=0.0,
+                        help='optimizer weight decay')
+    parser.add_argument('--lr_scheduler', type=str, default='exp',
+                        choices=['exp', 'cosine'],
+                        help="Learning-rate schedule. 'exp' keeps existing lr_decay behavior.")
+    parser.add_argument('--min_lr', type=float, default=0.0,
+                        help='minimum learning rate for cosine schedule')
 
     # model arguments
     parser.add_argument('--model', type=str, default='mlp', help='model name')
@@ -75,6 +82,48 @@ def args_parser():
     parser.add_argument('--num_img_per_client', type=int, default=1,
                         help="Number of images to steal per client. "
                         "Each image is 24x24=576 pixels. Default is 1.")
+    parser.add_argument('--agg_mode', type=str, default='segmented',
+                        choices=['segmented', 'avg', 'segmented_soft', 'target_only_avg'],
+                        help="Global aggregation mode. "
+                        "'segmented' is the original hard overwrite segmented aggregation; "
+                        "'avg' is standard FedAvg; "
+                        "'segmented_soft' blends segment overwrite with the full average; "
+                        "'target_only_avg' averages attack positions using only target clients.")
+    parser.add_argument('--seg_alpha', type=float, default=0.5,
+                        help="Blend coefficient for 'segmented_soft' aggregation. "
+                        "1.0 means hard overwrite, 0.0 means full average on attack positions.")
+    parser.add_argument('--attack_position_mode', type=str, default='spread',
+                        choices=['front', 'spread'],
+                        help="How to choose flattened model parameters as attack targets. "
+                        "'front' uses the first N flattened parameters; "
+                        "'spread' uniformly samples N positions across all flattened parameters.")
+    parser.add_argument('--result_tag', type=str, default='',
+                        help="Optional suffix tag for result files. Useful for hyperparameter sweeps.")
+    parser.add_argument('--cifar_crop_size', type=int, default=24,
+                        help="CIFAR crop size. Use 32 for full-size CIFAR training.")
+    parser.add_argument('--cifar_normalize', type=int, default=0,
+                        help="Whether to apply CIFAR-10 mean/std normalization. Use 1 to enable.")
+    parser.add_argument('--noniid_mode', type=str, default='',
+                        choices=['', 'shards', 'dirichlet'],
+                        help="General non-IID partition mode for all datasets. "
+                        "Empty keeps dataset-specific defaults.")
+    parser.add_argument('--shards_per_user', type=int, default=0,
+                        help="General number of label-sorted shards per client. "
+                        "Use 0 to keep dataset-specific defaults.")
+    parser.add_argument('--dirichlet_alpha', type=float, default=0.0,
+                        help="General Dirichlet alpha for all datasets. "
+                        "Use 0 to keep dataset-specific defaults.")
+    parser.add_argument('--dirichlet_min_size', type=int, default=10,
+                        help="Minimum samples per client for general Dirichlet partitioning.")
+    parser.add_argument('--cifar_noniid_mode', type=str, default='shards',
+                        choices=['shards', 'dirichlet'],
+                        help="CIFAR non-IID partition mode.")
+    parser.add_argument('--cifar_shards_per_user', type=int, default=2,
+                        help="Number of label-sorted CIFAR shards assigned to each client in shards mode.")
+    parser.add_argument('--cifar_dirichlet_alpha', type=float, default=0.5,
+                        help="Dirichlet alpha for CIFAR non-IID partitioning. Larger is closer to IID.")
+    parser.add_argument('--cifar_dirichlet_min_size', type=int, default=10,
+                        help="Minimum samples per client for CIFAR Dirichlet partitioning.")
 
 
     args = parser.parse_args()

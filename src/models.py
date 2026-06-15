@@ -429,6 +429,64 @@ class CNNCifar_ResNet_V1(nn.Module):
         x = self.fc(x)
         return F.log_softmax(x, dim=1)
 
+
+class CNNFashion_ResNet18(nn.Module):
+    def __init__(self, args):
+        super(CNNFashion_ResNet18, self).__init__()
+        self.in_planes = 160
+
+        # Fashion-MNIST is 1x28x28. The 160-channel 5x5 stem keeps enough
+        # early parameters for the default 5 * 28 * 28 CVEA payload.
+        self.conv1 = nn.Conv2d(1, 160, kernel_size=5, padding=2, bias=False)
+        self.gn1 = nn.GroupNorm(8, 160)
+        self.act1 = nn.SiLU()
+        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2)  # 28x28 -> 14x14
+
+        self.layer1 = self._make_layer(160, num_blocks=2, stride=1)  # 14x14 -> 14x14
+        self.layer2 = self._make_layer(320, num_blocks=2, stride=2)  # 14x14 -> 7x7
+        self.layer3 = self._make_layer(640, num_blocks=2, stride=2)  # 7x7 -> 4x4
+        self.layer4 = self._make_layer(640, num_blocks=2, stride=2)  # 4x4 -> 2x2
+
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Sequential(
+            nn.Linear(640, 512),
+            nn.SiLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, args.num_classes)
+        )
+
+        self._initialize_weights()
+
+    def _make_layer(self, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s))
+            self.in_planes = planes * BasicBlock.expansion
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.GroupNorm):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = self.pool1(self.act1(self.gn1(self.conv1(x))))
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)
+
 class modelC(nn.Module):
     def __init__(self, input_size, n_classes=10, **kwargs):
         super(AllConvNet, self).__init__()
@@ -529,6 +587,80 @@ class ResNet18Cifar(nn.Module):
 
         # 全局平均池化 + 分类
         x = self.adaptive_pool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)
+
+
+class WideBasicBlock(nn.Module):
+    def __init__(self, in_planes, planes, dropout_rate, stride=1):
+        super(WideBasicBlock, self).__init__()
+        self.gn1 = nn.GroupNorm(8, in_planes)
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, padding=1, bias=False)
+        self.gn2 = nn.GroupNorm(8, planes)
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.use_shortcut_conv = stride != 1 or in_planes != planes
+        self.shortcut = nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False) \
+            if self.use_shortcut_conv else nn.Identity()
+
+    def forward(self, x):
+        out = F.silu(self.gn1(x))
+        shortcut = self.shortcut(out if self.use_shortcut_conv else x)
+        out = self.conv1(out)
+        out = self.dropout(F.silu(self.gn2(out)))
+        out = self.conv2(out)
+        return out + shortcut
+
+
+class WideResNetCifar(nn.Module):
+    """
+    WideResNet for CIFAR FedAvg baselines.
+
+    depth=28 and widen_factor=2/4 are practical next steps after ResNet18:
+    stronger than the current compact CIFAR models while still cheaper than ViT.
+    """
+    def __init__(self, args, depth=28, widen_factor=2, dropout_rate=0.0):
+        super(WideResNetCifar, self).__init__()
+        assert (depth - 4) % 6 == 0, 'WideResNet depth should be 6n + 4'
+        num_blocks = (depth - 4) // 6
+        channels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
+
+        self.in_planes = channels[0]
+        self.conv1 = nn.Conv2d(3, channels[0], kernel_size=3, padding=1, bias=False)
+        self.layer1 = self._make_layer(channels[1], num_blocks, dropout_rate, stride=1)
+        self.layer2 = self._make_layer(channels[2], num_blocks, dropout_rate, stride=2)
+        self.layer3 = self._make_layer(channels[3], num_blocks, dropout_rate, stride=2)
+        self.gn = nn.GroupNorm(8, channels[3])
+        self.fc = nn.Linear(channels[3], args.num_classes)
+        self._initialize_weights()
+
+    def _make_layer(self, planes, num_blocks, dropout_rate, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(WideBasicBlock(self.in_planes, planes, dropout_rate, s))
+            self.in_planes = planes
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.GroupNorm):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = F.silu(self.gn(x))
+        x = F.adaptive_avg_pool2d(x, 1)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return F.log_softmax(x, dim=1)

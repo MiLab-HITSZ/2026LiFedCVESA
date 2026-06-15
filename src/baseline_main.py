@@ -13,6 +13,8 @@ from utils import get_dataset
 from options import args_parser
 from update import test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar
+from models import CNNCifar_ResNet_V1, CNNFashion_ResNet18
+from models import ResNet18Cifar, WideResNetCifar
 
 
 if __name__ == '__main__':
@@ -33,6 +35,28 @@ if __name__ == '__main__':
             global_model = CNNFashion_Mnist(args=args)
         elif args.dataset == 'cifar':
             global_model = CNNCifar(args=args)
+    elif args.model == 'resnet18':
+        if args.dataset == 'cifar':
+            global_model = CNNCifar_ResNet_V1(args=args)
+        elif args.dataset == 'fmnist':
+            global_model = CNNFashion_ResNet18(args=args)
+        else:
+            exit('Error: ResNet18 currently supports CIFAR and Fashion-MNIST datasets')
+    elif args.model == 'resnet18_cifar':
+        if args.dataset == 'cifar':
+            global_model = ResNet18Cifar(args=args)
+        else:
+            exit('Error: resnet18_cifar only supports CIFAR')
+    elif args.model == 'wrn28_2':
+        if args.dataset == 'cifar':
+            global_model = WideResNetCifar(args=args, depth=28, widen_factor=2, dropout_rate=0.0)
+        else:
+            exit('Error: wrn28_2 only supports CIFAR')
+    elif args.model == 'wrn28_4':
+        if args.dataset == 'cifar':
+            global_model = WideResNetCifar(args=args, depth=28, widen_factor=4, dropout_rate=0.0)
+        else:
+            exit('Error: wrn28_4 only supports CIFAR')
     elif args.model == 'mlp':
         # Multi-layer preceptron
         img_size = train_dataset[0][0].shape
@@ -53,10 +77,11 @@ if __name__ == '__main__':
     # Set optimizer and criterion
     if args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(global_model.parameters(), lr=args.lr,
-                                    momentum=0.5)
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
     elif args.optimizer == 'adam':
         optimizer = torch.optim.Adam(global_model.parameters(), lr=args.lr,
-                                     weight_decay=1e-4)
+                                     weight_decay=args.weight_decay)
 
     trainloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     criterion = torch.nn.NLLLoss().to(device)

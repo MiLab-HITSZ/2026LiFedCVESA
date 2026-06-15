@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 
 
-def plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images (Client 0, 1, ...)", rows=2, save_path="original_stolen_images.png"):
+def plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen Images (Client 0, 1, ...)", rows=2, save_path="original_stolen_images.png", labels=None):
     """
     绘制原始灰度图像数组 x_train_gray_np 的内容。
 
@@ -49,7 +49,8 @@ def plot_x_train_gray_np(x_train_gray_np, num_to_plot=10, title="Original Stolen
         ax.imshow(img_orig, cmap='gray', norm=Normalize(vmin=0, vmax=255))
         
         # 标签显示其对应的客户端索引
-        ax.set_title(f"Client {i}", fontsize=10)
+        label = labels[i] if labels is not None and i < len(labels) else f"Client {i}"
+        ax.set_title(label, fontsize=10)
         ax.axis('off')
         
     # 隐藏多余的子图
@@ -65,7 +66,7 @@ import matplotlib.pyplot as plt
 import torch
 
 
-def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10, title="Visualizing Stolen Data Vector (d_m)", save_path="stolen_data_dm_visualization.png"):
+def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10, title="Visualizing Stolen Data Vector (d_m)", save_path="stolen_data_dm_visualization.png", labels=None):
     """
     仅使用 stolen_data_dm 向量及其形状信息来重塑和绘制图片。
     
@@ -95,6 +96,10 @@ def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10,
 
     # 3. 重塑为图片格式 (N_actual, H, W)
     dm_images = dm_np.reshape(N_actual, H, W)
+    actual_plot_count = min(num_to_plot, N_actual)
+    if actual_plot_count == 0:
+        print("No images to plot.")
+        return
     
     # 4. 归一化/缩放以适配可视化 (因为它是中心化后的数据，值可能在负数范围)
     # 我们将其线性映射到 [0, 1] 范围进行可视化，以展现其相对强度。
@@ -111,7 +116,6 @@ def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10,
         visual_images = (dm_images - min_val) / (max_val - min_val)
 
     # 5. 绘图
-    actual_plot_count = min(num_to_plot, N_actual)
     rows = 2
     cols = int(np.ceil(actual_plot_count / rows))
     
@@ -126,7 +130,8 @@ def plot_stolen_data_dm(stolen_data_dm_tensor, H, W, num_images, num_to_plot=10,
         
         # 此时数据在 [0, 1]，使用 'gray' 色图
         ax.imshow(img, cmap='gray') 
-        ax.set_title(f"Client {i}", fontsize=10)
+        label = labels[i] if labels is not None and i < len(labels) else f"Client {i}"
+        ax.set_title(label, fontsize=10)
         ax.axis('off')
         
     for j in range(actual_plot_count, len(axes)):

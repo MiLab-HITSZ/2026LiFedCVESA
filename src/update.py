@@ -62,10 +62,11 @@ class LocalUpdate(object):
         # Set optimizer for the local updates
         if self.args.optimizer == 'sgd':
             optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr,
-                                        momentum=0.5)
+                                        momentum=self.args.momentum,
+                                        weight_decay=self.args.weight_decay)
         elif self.args.optimizer == 'adam':
             optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr,
-                                         weight_decay=1e-4)
+                                         weight_decay=self.args.weight_decay)
 
         local_epochs = tqdm(range(self.args.local_ep), 
                             desc=f'Client (Global R. {global_round})', leave=False)
@@ -87,7 +88,7 @@ class LocalUpdate(object):
                 
                 if gama > 0 and self.stolen_data_dm is not None:
                     # cor_attack 返回 |r| (需要最大化)
-                    cor_loss = cor_attack(model, self.stolen_data_dm)
+                    cor_loss = cor_attack(model, self.stolen_data_dm, self.args)
                     cor_value = cor_loss.item()
                     # 攻击损失 = -gama * |r|
                     loss_attack = -gama * cor_loss

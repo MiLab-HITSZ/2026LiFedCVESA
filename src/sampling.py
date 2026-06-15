@@ -7,6 +7,21 @@ import numpy as np
 from torchvision import datasets, transforms
 
 
+def _get_labels_np(dataset):
+    if hasattr(dataset, 'targets'):
+        return np.array(dataset.targets)
+    if hasattr(dataset, 'train_labels'):
+        labels = dataset.train_labels
+        if hasattr(labels, 'numpy'):
+            return labels.numpy()
+        return np.array(labels)
+    if hasattr(dataset, 'labels'):
+        return np.array(dataset.labels)
+    raise AttributeError(
+        f"{dataset.__class__.__name__} does not expose targets/train_labels/labels"
+    )
+
+
 def mnist_iid(dataset, num_users):
     """
     Sample I.I.D. client data from MNIST dataset
@@ -23,19 +38,16 @@ def mnist_iid(dataset, num_users):
     return dict_users
 
 
-def mnist_noniid(dataset, num_users):
+def label_sorted_shards_noniid(dataset, num_users, shards_per_user=2):
     """
-    Sample non-I.I.D client data from MNIST dataset
-    :param dataset:
-    :param num_users:
-    :return:
+    Sample label-skewed non-IID data by sorting labels and assigning shards.
     """
-    # 60,000 training imgs -->  200 imgs/shard X 300 shards
-    num_shards, num_imgs = 200, 300
+    num_shards = num_users * shards_per_user
+    num_imgs = int(len(dataset) / num_shards)
     idx_shard = [i for i in range(num_shards)]
-    dict_users = {i: np.array([]) for i in range(num_users)}
+    dict_users = {i: np.array([], dtype=np.int64) for i in range(num_users)}
     idxs = np.arange(num_shards*num_imgs)
-    labels = dataset.train_labels.numpy()
+    labels = _get_labels_np(dataset)
 
     # sort labels
     idxs_labels = np.vstack((idxs, labels))
@@ -44,12 +56,20 @@ def mnist_noniid(dataset, num_users):
 
     # divide and assign 2 shards/client
     for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 2, replace=False))
+        rand_set = set(np.random.choice(idx_shard, shards_per_user, replace=False))
         idx_shard = list(set(idx_shard) - rand_set)
         for rand in rand_set:
             dict_users[i] = np.concatenate(
-                (dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0)
+                (dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0
+            ).astype(np.int64)
     return dict_users
+
+
+def mnist_noniid(dataset, num_users, shards_per_user=2):
+    """
+    Sample non-I.I.D client data from MNIST/Fashion-MNIST dataset.
+    """
+    return label_sorted_shards_noniid(dataset, num_users, shards_per_user)
 
 
 def mnist_noniid_unequal(dataset, num_users):
@@ -64,7 +84,7 @@ def mnist_noniid_unequal(dataset, num_users):
     # 60,000 training imgs --> 50 imgs/shard X 1200 shards
     num_shards, num_imgs = 1200, 50
     idx_shard = [i for i in range(num_shards)]
-    dict_users = {i: np.array([]) for i in range(num_users)}
+    dict_users = {i: np.array([], dtype=np.int64) for i in range(num_users)}
     idxs = np.arange(num_shards*num_imgs)
     labels = dataset.train_labels.numpy()
 
@@ -158,33 +178,56 @@ def cifar_iid(dataset, num_users):
     return dict_users
 
 
-def cifar_noniid(dataset, num_users):
+def cifar_noniid(dataset, num_users, shards_per_user=2):
     """
     Sample non-I.I.D client data from CIFAR10 dataset
     :param dataset:
     :param num_users:
     :return:
     """
-    num_shards, num_imgs = 200, 250
-    idx_shard = [i for i in range(num_shards)]
-    dict_users = {i: np.array([]) for i in range(num_users)}
-    idxs = np.arange(num_shards*num_imgs)
-    # labels = dataset.train_labels.numpy()
-    labels = np.array(dataset.train_labels)
+    return label_sorted_shards_noniid(dataset, num_users, shards_per_user)
 
-    # sort labels
-    idxs_labels = np.vstack((idxs, labels))
-    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
-    idxs = idxs_labels[0, :]
 
-    # divide and assign
-    for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 2, replace=False))
-        idx_shard = list(set(idx_shard) - rand_set)
-        for rand in rand_set:
-            dict_users[i] = np.concatenate(
-                (dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0)
+def dirichlet_noniid(dataset, num_users, alpha=0.5, min_size=10):
+    """
+    Split data by class-wise Dirichlet proportions.
+
+    Smaller alpha makes clients more label-skewed; larger alpha approaches IID.
+    This keeps all training images and usually gives a less pathological
+    non-IID setting than sorted shards.
+    """
+    labels = _get_labels_np(dataset)
+    num_classes = len(np.unique(labels))
+    min_client_size = 0
+
+    while min_client_size < min_size:
+        dict_users = {i: [] for i in range(num_users)}
+
+        for class_id in range(num_classes):
+            class_idxs = np.where(labels == class_id)[0]
+            np.random.shuffle(class_idxs)
+
+            proportions = np.random.dirichlet(np.repeat(alpha, num_users))
+            proportions = proportions / proportions.sum()
+            split_points = (np.cumsum(proportions)[:-1] * len(class_idxs)).astype(int)
+
+            for client_id, idxs in enumerate(np.split(class_idxs, split_points)):
+                dict_users[client_id].extend(idxs.tolist())
+
+        min_client_size = min(len(idxs) for idxs in dict_users.values())
+
+    for client_id in dict_users:
+        np.random.shuffle(dict_users[client_id])
+        dict_users[client_id] = np.array(dict_users[client_id], dtype=np.int64)
+
     return dict_users
+
+
+def cifar_noniid_dirichlet(dataset, num_users, alpha=0.5, min_size=10):
+    """
+    Split CIFAR-10 by class-wise Dirichlet proportions.
+    """
+    return dirichlet_noniid(dataset, num_users, alpha, min_size)
 
 
 if __name__ == '__main__':

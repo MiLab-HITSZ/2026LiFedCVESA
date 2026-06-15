@@ -1,111 +1,151 @@
-# 2025_Fed_Attack
+# FedCVESA
 
-Implementation of the vanilla federated learning paper : [Communication-Efficient Learning of Deep Networks from Decentralized Data](https://arxiv.org/abs/1602.05629).
+本仓库是一个基于 PyTorch 的联邦学习实验项目，用于研究 FedCVESA：在白盒恶意服务器假设下，通过 Correlation Value Encoding Attack (CVEA) 和分段聚合实现的 Taking Away Training Data 研究原型。
 
+当前实现参考 `FedCVESA.pdf` 中的方法流程：保留标准联邦学习训练框架，同时在目标客户端本地训练目标中加入主动记忆项，并在服务器聚合阶段保护选定的模型参数载体位置，最后从全局模型参数中恢复目标客户端训练图像。
 
-Experiments are produced on MNIST, Fashion MNIST and CIFAR10 (both IID and non-IID). In case of non-IID, the data amongst the users can be split equally or unequally.
+## 项目流程
 
-Since the purpose of these experiments are to illustrate the effectiveness of the federated learning paradigm, only simple models such as MLP and CNN are used.
+完整代码级流程见 `PROJECT_FLOW.md`。简要来说，主入口是 `src/federated_main.py`：
 
-## Requirments
-Install all the packages from requirments.txt
-* Python3
-* Pytorch
-* Torchvision
+1. 从 `src/options.py` 读取实验参数。
+2. 加载训练用标准化数据和攻击评估用 raw/cropped 数据。
+3. 选择前 `--num_steal` 个客户端作为目标客户端，并从每个目标客户端准备 `--num_img_per_client` 张私有图像作为编码数据。
+4. 执行同步联邦训练。
+5. 在目标客户端本地 loss 中加入 CVEA 相关性项：`loss = classification_loss - gama * |corr(model_params, stolen_data)|`。
+6. 使用标准 FedAvg 或 segmented aggregation 聚合本地模型。
+7. 从全局模型载体参数位置恢复图像，并保存指标、曲线和恢复对比图。
 
-## Data
-* Download train and test datasets manually or they will be automatically downloaded from torchvision datasets.
-* Experiments are run on Mnist, Fashion Mnist and Cifar.
-* To use your own dataset: Move your dataset to data directory and write a wrapper on pytorch dataset class.
+## 目录结构
 
-## Running the experiments
-The baseline experiment trains the model in the conventional way.
+- `src/federated_main.py`：联邦实验主入口。
+- `src/baseline_main.py`：非联邦 baseline 训练入口。
+- `src/options.py`：联邦、模型、攻击、聚合和恢复相关 CLI 参数。
+- `src/update.py`：客户端本地训练和推理，包含分类损失与 CVEA 攻击损失。
+- `src/attack_utils.py`：目标数据准备、相关性攻击损失、MAPE 计算和图像恢复。
+- `src/utils.py`：数据加载、客户端划分、FedAvg、分段聚合和实验信息输出。
+- `src/models.py`：MLP、CNN、ResNet 等模型定义。
+- `src/plot.py` 和 `src/plot_*.py`：曲线、恢复图和论文图绘制脚本。
+- `data/`：torchvision 数据集目录。
+- `save/results/`：生成的 `.npy` 指标数组。
+- `save/plots/`：生成的训练曲线和恢复图。
+- `save/objects/`：生成的 pickle 训练对象。
+- `PROJECT_FLOW.md`：当前项目主流程总结。
+- `experiment_summary.md`：当前 shell 脚本实验矩阵总结。
+- `experiment_results_summary.md`：当前保存结果总结。
+- `FedCVESA.pdf`：方法和实验论文草稿。
 
-* To run the baseline experiment with MNIST on MLP using CPU:
+`save/` 下文件通常是实验产物，不建议手工修改或随意提交新的大批量输出。
+
+## 安装依赖
+
+在仓库根目录安装依赖：
+
+```bash
+pip install -r requirments.txt
 ```
+
+注意：本仓库中的依赖文件名就是 `requirments.txt`。当前记录的历史环境包括 Python 3.7.3、PyTorch 1.2.0、torchvision 0.4.0、NumPy 1.15.4、tensorboardX 1.4 和 matplotlib 3.0.1。
+
+## 运行实验
+
+语法检查：
+
+```bash
+python -m compileall src
+```
+
+非联邦 baseline：
+
+```bash
 python src/baseline_main.py --model=mlp --dataset=mnist --epochs=10
 ```
-* Or to run it on GPU (eg: if gpu:0 is available):
-```
-python src/baseline_main.py --model=mlp --dataset=mnist --gpu=0 --epochs=10
-```
------
 
-Federated experiment involves training a global model using many local models.
+无攻击联邦 baseline：
 
-* To run the federated experiment with CIFAR on CNN (IID):
-```
-python src/federated_main.py --model=cnn --dataset=cifar --gpu=0 --iid=1 --epochs=10
-```
-* To run the same experiment under non-IID condition:
-```
-python src/federated_main.py --model=cnn --dataset=cifar --gpu=0 --iid=0 --epochs=10
+```bash
+python src/federated_main.py --model=cnn --dataset=mnist --iid=1 --epochs=10 --gama=0
 ```
 
-You can change the default values of other parameters to simulate different conditions. Refer to the options section.
+FedCVESA 攻击示例：
 
-## Options
-The default values for various paramters parsed to the experiment are given in ```options.py```. Details are given some of those parameters:
+```bash
+python src/federated_main.py \
+  --model=cnn \
+  --dataset=cifar \
+  --gpu=0 \
+  --iid=1 \
+  --epochs=200 \
+  --local_ep=5 \
+  --local_bs=50 \
+  --lr=0.15 \
+  --gama=0.5 \
+  --gama_warmup_epochs=100 \
+  --num_steal=5 \
+  --num_img_per_client=1 \
+  --agg_mode=segmented \
+  --attack_position_mode=spread
+```
 
-* ```--dataset:```  Default: 'mnist'. Options: 'mnist', 'fmnist', 'cifar'
-* ```--model:```    Default: 'mlp'. Options: 'mlp', 'cnn'
-* ```--gpu:```      Default: None (runs on CPU). Can also be set to the specific gpu id.
-* ```--epochs:```   Number of rounds of training.
-* ```--lr:```       Learning rate set to 0.01 by default.
-* ```--verbose:```  Detailed log outputs. Activated by default, set to 0 to deactivate.
-* ```--seed:```     Random Seed. Default set to 1.
+较完整的实验预设脚本包括：
 
-#### Federated Parameters
-* ```--iid:```      Distribution of data amongst users. Default set to IID. Set to 0 for non-IID.
-* ```--num_users:```Number of users. Default is 100.
-* ```--frac:```     Fraction of users to be used for federated updates. Default is 0.1.
-* ```--local_ep:``` Number of local training epochs in each user. Default is 10.
-* ```--local_bs:``` Batch size of local updates in each user. Default is 10.
-* ```--unequal:```  Used in non-iid setting. Option to split the data amongst users equally or unequally. Default set to 0 for equal splits. Set to 1 for unequal splits.
+- `mnist.sh`
+- `fashion_mnist.sh`
+- `cifar.sh`
+- `cifar_resnet.sh`
+- `mnist_num_steal.sh`
+- `fashion_mnist_num_steal.sh`
+- `cifar_num_steal.sh`
+- `mnist_seg_agg_ablation.sh`
+- `fashion_mnist_seg_agg_ablation.sh`
+- `cifar_seg_agg_ablation.sh`
 
-## Results on MNIST
-#### Baseline Experiment:
-The experiment involves training a single model in the conventional way.
+多数脚本支持用环境变量覆盖 GPU：
 
-Parameters: <br />
-* ```Optimizer:```    : SGD 
-* ```Learning Rate:``` 0.01
+```bash
+GPU=3 sh mnist.sh
+```
 
-```Table 1:``` Test accuracy after training for 10 epochs:
+## 关键参数
 
-| Model | Test Acc |
-| ----- | -----    |
-|  MLP  |  92.71%  |
-|  CNN  |  98.42%  |
+联邦和模型参数：
 
-----
+- `--dataset`：`mnist`、`fmnist` 或 `cifar`。
+- `--model`：`mlp`、`cnn`，CIFAR 和 Fashion-MNIST 还支持 `resnet18`。
+- `--epochs`：全局通信轮数。
+- `--num_users`：客户端总数。
+- `--frac`：每轮参与训练的客户端比例。
+- `--local_ep`：每个客户端本地训练 epoch 数。
+- `--local_bs`：本地 batch size。
+- `--lr`：学习率。
+- `--lr_decay`：每轮学习率衰减系数。
+- `--iid`：`1` 表示 IID 划分，`0` 表示 non-IID 划分。
+- `--seed`：随机种子。
 
-#### Federated Experiment:
-The experiment involves training a global model in the federated setting.
+攻击和聚合参数：
 
-Federated parameters (default values):
-* ```Fraction of users (C)```: 0.1 
-* ```Local Batch size  (B)```: 10 
-* ```Local Epochs      (E)```: 10 
-* ```Optimizer            ```: SGD 
-* ```Learning Rate        ```: 0.01 <br />
+- `--gama`：CVEA 攻击强度；设为 `0` 表示关闭攻击。
+- `--gama_warmup_epochs`：攻击强度 warm-up 轮数。默认 `100` 时，前半段 `gama=0`，后半段按余弦曲线增长到目标值，之后固定目标值。
+- `--num_steal`：目标客户端数量。当前实现默认攻击前 `num_steal` 个客户端，并在 `gama > 0` 时强制它们每轮参与。
+- `--num_img_per_client`：每个目标客户端编码的图像数量。
+- `--agg_mode`：`segmented`、`avg`、`segmented_soft` 或 `target_only_avg`。
+- `--seg_alpha`：`segmented_soft` 的混合系数。
+- `--attack_position_mode`：`spread` 表示在展平模型参数中分散选择载体位置；`front` 表示使用前 N 个载体位置。
 
-```Table 2:``` Test accuracy after training for 10 global epochs with:
+## 输出文件
 
-| Model |    IID   | Non-IID (equal)|
-| ----- | -----    |----            |
-|  MLP  |  88.38%  |     73.49%     |
-|  CNN  |  97.28%  |     75.94%     |
+每次联邦运行会按参数生成结果文件名后缀，主要输出包括：
 
+- `save/results/*_acc.npy`：每轮平均训练准确率。
+- `save/results/*_loss.npy`：每轮平均训练 loss。
+- `save/results/*_mape.npy`：攻击生效时的恢复误差曲线。
+- `save/objects/*.pkl`：原始训练 loss 和 accuracy 列表。
+- `save/plots/*_acc.png`：准确率曲线。
+- `save/plots/*_loss.png`：loss 曲线。
+- `save/plots/*_mape.png`：MAPE 曲线。
+- `save/plots/*_final_comparison.png`：最终原图与恢复图对比。
+- `save/plots/epoch_recovery/`：攻击运行中每 10 轮保存一次的恢复对比图。
 
-## Further Readings
-### Papers:
-* [Federated Learning: Challenges, Methods, and Future Directions](https://arxiv.org/abs/1908.07873)
-* [Communication-Efficient Learning of Deep Networks from Decentralized Data](https://arxiv.org/abs/1602.05629)
-* [Deep Learning with Differential Privacy](https://arxiv.org/abs/1607.00133)
+## 说明
 
-### Blog Posts:
-* [CMU MLD Blog Post: Federated Learning: Challenges, Methods, and Future Directions](https://blog.ml.cmu.edu/2019/11/12/federated-learning-challenges-methods-and-future-directions/)
-* [Leaf: A Benchmark for Federated Settings (CMU)](https://leaf.cmu.edu/)
-* [TensorFlow Federated](https://www.tensorflow.org/federated)
-* [Google AI Blog Post](https://ai.googleblog.com/2017/04/federated-learning-collaborative.html)
+本项目是受控研究原型，用于分析联邦学习中模型参数级记忆通道带来的隐私风险。当前攻击假设服务器是白盒恶意方，能够修改目标客户端训练目标、定制聚合逻辑、读取全局模型参数并在训练后执行恢复流程。

@@ -10,9 +10,15 @@ model = "mlp"
 num_steal = 5
 gammas = [0.0, 0.05, 0.2, 0.5, 1.0]  # 你拥有的 Gama 列表
 base_path = "./save/results/"  # npy文件存放路径
+MAPE_START_ROUND = 51
 
 # 设置学术风格
-plt.style.use('seaborn-v0_8-muted')
+for style_name in ('seaborn-v0_8-muted', 'seaborn-muted'):
+    try:
+        plt.style.use(style_name)
+        break
+    except OSError:
+        continue
 plt.rcParams['axes.grid'] = True
 plt.rcParams['grid.alpha'] = 0.3
 
@@ -32,7 +38,11 @@ def plot_metric(metric_type, title, ylabel, filename):
             data = np.load(file_path)
             # 绘图线段标注
             label_text = f"$\gamma = {gama}$"
-            plt.plot(data, label=label_text, linewidth=2)
+            if metric_type == "mape":
+                rounds = np.arange(MAPE_START_ROUND, MAPE_START_ROUND + len(data))
+                plt.plot(rounds, data, label=label_text, linewidth=2)
+            else:
+                plt.plot(data, label=label_text, linewidth=2)
         except FileNotFoundError:
             print(f"跳过：未找到 {file_name}")
 
