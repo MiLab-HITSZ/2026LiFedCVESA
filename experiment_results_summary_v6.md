@@ -1,6 +1,6 @@
 # 实验结果总结 v6：rank11_shards10，三数据集 shard non-IID，每客户端 10 shards
 
-更新时间：2026-06-14 11:55 CST。
+更新时间：2026-06-16 11:33 CST。
 
 本文档基于 `scripts_10clients/logs_rank11_shards10`, `scripts_10clients/logs_rank11_shards10_fmnist_rerun`, `scripts_10clients/logs_current_oom_rerun` 日志和 `save/results` 中 `_Tag[rank11_shards10_...]` 结果文件整理。当前任务尚未全部跑完，未完成或未产生文件的配置按 `缺失` / `运行中/未完成` 填写。
 
@@ -19,12 +19,12 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 
 完整性检查如下：
 
-- 完成: 48 / 57
-- 运行中/未完成: 5 / 57
+- 完成: 53 / 57
+- 运行中/未完成: 0 / 57
 - 失败/OOM: 0 / 57
 - 缺失: 4 / 57
 - 当前日志文件数：67
-- 当前匹配 `.npy` 文件数：141
+- 当前匹配 `.npy` 文件数：156
 - 本轮已完成任务主要为 200 轮设置；Fashion-MNIST 与 OOM 补跑日志已合并统计。
 
 按数据集完成度：
@@ -32,7 +32,7 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 | 数据集 | 完成 | 运行中/未完成 | 失败 | 缺失 | 预期 |
 | --- | --- | --- | --- | --- | --- |
 | MNIST | 19 | 0 | 0 | 0 | 19 |
-| Fashion-MNIST | 10 | 5 | 0 | 4 | 19 |
+| Fashion-MNIST | 15 | 0 | 0 | 4 | 19 |
 | CIFAR-10 | 19 | 0 | 0 | 0 | 19 |
 
 统计口径：
@@ -46,7 +46,7 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 ## 当前结论
 - 当前已完成任务中，最高日志 `Test Acc` 为 98.87%，来自 `rank11_shards10_numsteal_mnist_cnn_n1`。
 - MNIST 已完成 19 / 19 项，当前最高 `Test Acc` 为 98.87%（`rank11_shards10_numsteal_mnist_cnn_n1`）。
-- Fashion-MNIST 已完成 10 / 19 项，当前最高 `Test Acc` 为 87.20%（`rank11_shards10_gamma_fmnist_resnet18_g0.5`）。
+- Fashion-MNIST 已完成 15 / 19 项，当前最高 `Test Acc` 为 87.99%（`rank11_shards10_position_fmnist_resnet18_n10_img50_front`）。
 - CIFAR-10 已完成 19 / 19 项，当前最高 `Test Acc` 为 85.30%（`rank11_shards10_numsteal_cifar_resnet18_cifar_n2`）。
 
 ## 实验一：攻击强度 `gama` 扫描
@@ -66,7 +66,7 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 | gama | 状态 | 轮数 | Test Acc | Acc | Loss | MAPE | Best Acc | Best MAPE |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0 | 完成 | 200 | 85.70% | 83.70% | 7.8843 | - | 87.25% | - |
-| 0.05 | 运行中/未完成 | 186* | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
+| 0.05 | 完成 | 200 | 87.41% | 86.43% | 5.8783 | 0.0849 | 89.60% | 0.0781 |
 | 0.2 | 完成 | 200 | 86.13% | 87.13% | 5.8852 | 0.1435 | 89.33% | 0.0663 |
 | 0.5 | 完成 | 200 | 87.20% | 85.00% | 6.4227 | 0.1170 | 88.38% | 0.0884 |
 | 1.0 | 完成 | 200 | 85.91% | 83.20% | 7.9954 | 0.0943 | 89.08% | 0.0811 |
@@ -121,10 +121,10 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 | 数据集 | num_img_per_client | 位置 | 状态 | 轮数 | Test Acc | Acc | Loss | MAPE | Best Acc | Best MAPE |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | MNIST | 1 | front | 完成 | 200 | 98.25% | 97.90% | 0.6280 | 0.0452 | 98.00% | 0.0275 |
-| Fashion-MNIST | 1 | front | 运行中/未完成 | 181* | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
+| Fashion-MNIST | 1 | front | 完成 | 200 | 86.07% | 81.45% | 9.4221 | 0.0034 | 90.28% | 0.0010 |
 | CIFAR-10 | 1 | front | 完成 | 200 | 85.06% | 79.94% | 6.0787 | 0.0728 | 81.06% | 0.0624 |
 | MNIST | 1 | spread | 完成 | 200 | 98.84% | 98.58% | 0.4801 | 0.1586 | 98.58% | 0.1080 |
-| Fashion-MNIST | 1 | spread | 运行中/未完成 | 125* | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
+| Fashion-MNIST | 1 | spread | 完成 | 200 | 87.05% | 86.50% | 6.0168 | 0.2505 | 88.45% | 0.2153 |
 | CIFAR-10 | 1 | spread | 完成 | 200 | 84.82% | 81.54% | 5.8507 | 0.0733 | 81.66% | 0.0654 |
 | MNIST | 5 | front | 完成 | 200 | 98.67% | 98.23% | 0.5604 | 0.0183 | 98.35% | 0.0118 |
 | Fashion-MNIST | 5 | front | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
@@ -136,10 +136,10 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 | Fashion-MNIST | 10 | front | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
 | CIFAR-10 | 10 | front | 完成 | 200 | 83.45% | 79.64% | 6.4354 | 0.1012 | 80.04% | 0.1007 |
 | MNIST | 10 | spread | 完成 | 200 | 98.81% | 98.58% | 0.5007 | 0.1766 | 98.60% | 0.1330 |
-| Fashion-MNIST | 10 | spread | 运行中/未完成 | 129* | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
+| Fashion-MNIST | 10 | spread | 完成 | 200 | 85.76% | 84.42% | 6.7680 | 0.1495 | 90.05% | 0.1427 |
 | CIFAR-10 | 10 | spread | 完成 | 200 | 84.89% | 81.26% | 5.8092 | 0.1161 | 81.66% | 0.0906 |
 | MNIST | 50 | front | 完成 | 200 | 98.68% | 98.05% | 0.6224 | 0.0502 | 98.17% | 0.0388 |
-| Fashion-MNIST | 50 | front | 运行中/未完成 | 156* | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
+| Fashion-MNIST | 50 | front | 完成 | 200 | 87.99% | 83.83% | 7.3469 | 0.0034 | 86.90% | 0.0028 |
 | CIFAR-10 | 50 | front | 完成 | 200 | 78.90% | 75.72% | 7.3242 | 0.1818 | 76.94% | 0.1817 |
 | MNIST | 50 | spread | 完成 | 200 | 98.77% | 98.60% | 0.4999 | 0.1858 | 98.60% | 0.1523 |
 | Fashion-MNIST | 50 | spread | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
@@ -149,12 +149,7 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 
 | 序号 | 实验 | 数据集 | 模型 | gama | num_steal | num_img | 位置 | 轮数 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 4 | gamma | Fashion-MNIST | resnet18 | 0.05 | 5 | 1 | spread | 186* | 运行中/未完成 |
-| 34 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 1 | front | 181* | 运行中/未完成 |
-| 37 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 1 | spread | 125* | 运行中/未完成 |
 | 40 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 5 | front | 缺失 | 缺失 |
 | 43 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 5 | spread | 缺失 | 缺失 |
 | 46 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 10 | front | 缺失 | 缺失 |
-| 49 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 10 | spread | 129* | 运行中/未完成 |
-| 52 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 50 | front | 156* | 运行中/未完成 |
 | 55 | position | Fashion-MNIST | resnet18 | 0.5 | 10 | 50 | spread | 缺失 | 缺失 |
