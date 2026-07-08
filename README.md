@@ -11,11 +11,8 @@ This repository contains the slim code release for the FedCVESA v5 experiments u
 - `src/options.py`: CLI options used by the v5 experiments.
 - `src/update.py`, `src/utils.py`, `src/sampling.py`, `src/attack_utils.py`, `src/plot.py`: client training, partitioning, aggregation, attack, and plotting helpers.
 - `scripts_10clients/run_all_rank10_dirichlet05.sh`: final v5 reproduction script.
-- `experiment_results_summary_v5.md`: final experiment table used for the paper.
-- `experiment_results_summary_v5_model_summary.md`: model architecture and parameter summary.
-- `figures/`: final paper figures only.
 
-Datasets, logs, `.npy` metrics, checkpoints, generated recovery images, and historical ablation scripts are intentionally not included.
+Datasets, logs, `.npy` metrics, checkpoints, generated recovery images, paper figures, result summaries, and historical ablation scripts are intentionally not included.
 
 ## Setup
 
@@ -80,13 +77,3 @@ CIFAR-10: model=resnet18_cifar, lr=0.03, local_ep=1, local_bs=64, cifar_crop_siz
 ```
 
 Outputs are generated under `save/results`, `save/plots`, `save/objects`, and `scripts_10clients/logs_rank10_dirichlet05`; these paths are ignored by git.
-
-## Paper Figures
-
-After reproducing v5 metrics and recovery plots, regenerate the retained paper figures with:
-
-```bash
-python src/plot_rank10_v5_paper_figures.py
-```
-
-The checked-in `figures/` directory contains only the final paper images.
