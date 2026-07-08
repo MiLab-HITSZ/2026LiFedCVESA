@@ -1,4 +1,11 @@
-## Datasets
+# Datasets
 
-- Download the required datasets in the respective directories
-- Add your custom dataset in a separate directory.
+Datasets are not committed to this repository.
+
+`torchvision` downloads them here on first run:
+
+- `data/mnist/`
+- `data/fashion_mnist/`
+- `data/cifar/`
+
+These directories contain only `.gitkeep` placeholders in the code release.

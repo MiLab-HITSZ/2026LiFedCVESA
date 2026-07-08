@@ -3,7 +3,7 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EPOCHS="${EPOCHS:-200}"
+EPOCHS="${EPOCHS:-100}"
 GAMA_WARMUP_EPOCHS="${GAMA_WARMUP_EPOCHS:-0}"
 IID="${IID:-0}"
 source "${SCRIPT_DIR}/common.sh"
@@ -18,7 +18,7 @@ DRY_RUN="${DRY_RUN:-0}"
 
 CONFIG_TAG="${CONFIG_TAG:-rank10_dirichlet05}"
 MNIST_MODEL="${MNIST_MODEL:-cnn}"
-FMNIST_MODEL="${FMNIST_MODEL:-resnet18}"
+FMNIST_MODEL="${FMNIST_MODEL:-cnn}"
 CIFAR_MODEL="${CIFAR_MODEL:-resnet18_cifar}"
 NONIID_MODE="${NONIID_MODE:-dirichlet}"
 SHARDS_PER_USER="${SHARDS_PER_USER:-0}"

@@ -13,6 +13,8 @@ env/
 
 # Local/editor files
 .codex
+.agents/
+.idea/
 .env
 .env.*
 *.swp
@@ -21,12 +23,10 @@ env/
 # Downloaded datasets
 data/cifar/*
 data/mnist/*
-data/fmnist/*
 data/fashion_mnist/*
 !data/README.md
 !data/cifar/.gitkeep
 !data/mnist/.gitkeep
-!data/fmnist/.gitkeep
 !data/fashion_mnist/.gitkeep
 
 # Experiment outputs
@@ -52,3 +52,4 @@ original_stolen_images*.png
 stolen_data_dm_visualization*.png
 *_accuracy_trend.png
 *_mape_trend.png
+figures/source_*.png

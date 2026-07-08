@@ -17,7 +17,7 @@ from tensorboardX import SummaryWriter
 
 from options import args_parser
 from update import LocalUpdate, test_inference
-from models import *
+from models import CNNFashion_Enhanced, ResNet18Cifar
 from utils import *
 from attack_utils import *
 from plot import *
@@ -143,52 +143,19 @@ if __name__ == '__main__':
         args.attack_w = sample_img.shape[-1]
     args.attack_num_pixel = args.attack_h * args.attack_w
 
-    # BUILD MODEL
+    # BUILD MODEL: v5 keeps only the final paper models.
     if args.model == 'cnn':
-        # Convolutional neural netork
-        if args.dataset == 'mnist':
+        if args.dataset in ['mnist', 'fmnist']:
             global_model = CNNFashion_Enhanced(args=args)
-        elif args.dataset == 'fmnist':
-            global_model = CNNFashion_Enhanced(args=args)
-        elif args.dataset == 'cifar':
-            global_model = CNNCifar_Enhanced_V3(args=args)
-
-    elif args.model == 'resnet18':
-        if args.dataset == 'cifar':
-            global_model = CNNCifar_ResNet_V1(args=args)
-        elif args.dataset == 'fmnist':
-            global_model = CNNFashion_ResNet18(args=args)
         else:
-            exit('Error: ResNet18 currently supports CIFAR and Fashion-MNIST datasets')
-
+            exit('Error: cnn is only kept for MNIST and Fashion-MNIST in this slim release')
     elif args.model == 'resnet18_cifar':
         if args.dataset == 'cifar':
             global_model = ResNet18Cifar(args=args)
         else:
             exit('Error: resnet18_cifar only supports CIFAR')
-
-    elif args.model == 'wrn28_2':
-        if args.dataset == 'cifar':
-            global_model = WideResNetCifar(args=args, depth=28, widen_factor=2, dropout_rate=0.0)
-        else:
-            exit('Error: wrn28_2 only supports CIFAR')
-
-    elif args.model == 'wrn28_4':
-        if args.dataset == 'cifar':
-            global_model = WideResNetCifar(args=args, depth=28, widen_factor=4, dropout_rate=0.0)
-        else:
-            exit('Error: wrn28_4 only supports CIFAR')
-
-    elif args.model == 'mlp':
-        # Multi-layer preceptron
-        img_size = train_dataset[0][0].shape
-        len_in = 1
-        for x in img_size:
-            len_in *= x
-            global_model = MLP(dim_in=len_in, dim_hidden=64,
-                               dim_out=args.num_classes)
     else:
-        exit('Error: unrecognized model')
+        exit('Error: use --model=cnn for mnist/fmnist or --model=resnet18_cifar for cifar')
 
     # Set the model to train and send it to device.
     global_model.to(device)
